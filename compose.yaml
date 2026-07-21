@@ -1,11 +1,15 @@
 services:
-  nineplus-ha:
+  nineplus:
     image: ghcr.io/wuchiawuchi/nineplus-ha-server:latest
-    container_name: nineplus-ha
+    container_name: nineplus
     restart: unless-stopped
     ports:
       - "19009:19009"
     environment:
+      NINEPLUS_BACKEND: "${NINEPLUS_BACKEND:-direct}"
+      NINEBOT_USERNAME: "${NINEBOT_USERNAME}"
+      NINEBOT_PASSWORD: "${NINEBOT_PASSWORD}"
+      NINEBOT_CONFIG_DIR: "/data/ninebot"
       HA_URL: "${HA_URL:-http://homeassistant.local:8123}"
       HA_TOKEN: "${HA_TOKEN}"
       NINEPLUS_BEARER_TOKEN: "${NINEPLUS_BEARER_TOKEN}"
@@ -14,3 +18,4 @@ services:
       NINEPLUS_CONFIG: "/data/config.json"
     volumes:
       - ./config.json:/data/config.json:ro
+      - ./ninebot-data:/data/ninebot

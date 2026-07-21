@@ -1,9 +1,10 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from server import NinePlusAdapter, Settings
+from server import DirectNinebotClient, NinePlusAdapter, Settings
 
 
 class FakeHA:
@@ -108,6 +109,37 @@ class HassccNinebotTests(unittest.TestCase):
         self.assertEqual(result["data"]["entity_id"], "ninebot.snabc_bell")
         result = self.adapter.action("SNABC", "engine_start")
         self.assertEqual((result["domain"], result["service"]), ("lock", "unlock"))
+
+
+class DirectNinebotTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.config_dir = Path(self.temp.name)
+        (self.config_dir / "tokens.json").write_text("{}", encoding="utf-8")
+        self.settings = Settings("", "", "", "", "", Path("unused"), backend="direct", ninebot_config_dir=self.config_dir)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @patch("server.subprocess.run")
+    def test_vehicle_discovery_uses_ninecli(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = '[{"wnumber":"SN1","device_name":"Bike"}]'
+        run.return_value.stderr = ""
+        vehicles = DirectNinebotClient(self.settings).vehicles()
+        self.assertEqual(vehicles[0]["wnumber"], "SN1")
+        command = run.call_args.args[0]
+        self.assertEqual(command[-2:], ["vehicles", "--json"])
+
+    @patch("server.subprocess.run")
+    def test_direct_controls_use_supported_commands(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "{}"
+        run.return_value.stderr = ""
+        client = DirectNinebotClient(self.settings)
+        client.action("SN1", "engine_start")
+        command = run.call_args.args[0]
+        self.assertEqual(command[-4:], ["engine-start", "SN1", "--yes", "--json"])
 
 
 if __name__ == "__main__":
