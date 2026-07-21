@@ -8,12 +8,16 @@ say() { printf '\n%s\n' "$*"; }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 prompt() {
   local label="$1" default="${2:-}" answer
-  if [[ -n "$default" ]]; then read -r -p "$label [$default]: " answer; else read -r -p "$label: " answer; fi
+  if [[ -n "$default" ]]; then
+    read -r -p "$label [$default]: " answer </dev/tty
+  else
+    read -r -p "$label: " answer </dev/tty
+  fi
   printf '%s' "${answer:-$default}"
 }
 secret() {
   local label="$1" answer
-  read -r -s -p "$label: " answer
+  read -r -s -p "$label: " answer </dev/tty
   printf '\n' >&2
   printf '%s' "$answer"
 }
@@ -21,6 +25,7 @@ command -v docker >/dev/null 2>&1 || die "没有找到 Docker，请先安装 Doc
 docker compose version >/dev/null 2>&1 || die "Docker Compose 不可用，请升级 Docker。"
 command -v curl >/dev/null 2>&1 || die "没有找到 curl。"
 command -v openssl >/dev/null 2>&1 || die "没有找到 openssl。"
+[[ -r /dev/tty ]] || die "当前没有交互终端。请登录 SSH 后直接运行脚本，不要通过后台任务执行。"
 
 mkdir -p "$PROJECT_DIR"
 cd "$PROJECT_DIR"
