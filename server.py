@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,6 +55,10 @@ class Settings:
     account: str
     password: str
     config_path: Path
+    backend: str = "home_assistant"
+    ninebot_username: str = ""
+    ninebot_password: str = ""
+    ninebot_config_dir: Path = Path("/data/ninebot")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -63,7 +69,72 @@ class Settings:
             account=_env("NINEPLUS_ACCOUNT"),
             password=_env("NINEPLUS_PASSWORD"),
             config_path=Path(_env("NINEPLUS_CONFIG", "/data/config.json")),
+            backend=_env("NINEPLUS_BACKEND", "direct").lower(),
+            ninebot_username=_env("NINEBOT_USERNAME"),
+            ninebot_password=_env("NINEBOT_PASSWORD"),
+            ninebot_config_dir=Path(_env("NINEBOT_CONFIG_DIR", "/data/ninebot")),
         )
+
+
+class DirectNinebotClient:
+    """Small synchronous wrapper around the same ninecli used by hasscc/ninebot."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.settings.ninebot_config_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        if not (self.settings.ninebot_config_dir / "tokens.json").exists():
+            if not settings.ninebot_username or not settings.ninebot_password:
+                raise RuntimeError("首次启动需要 NINEBOT_USERNAME 和 NINEBOT_PASSWORD")
+            self.run("login", "-u", settings.ninebot_username, "-p", settings.ninebot_password)
+
+    def run(self, *args: str) -> Any:
+        command = [
+            sys.executable, "-m", "ninecli", "--config",
+            str(self.settings.ninebot_config_dir), *args, "--json",
+        ]
+        with self._lock:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=35, check=False)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "ninecli 调用失败").strip()
+            raise RuntimeError(detail[:500])
+        try:
+            return json.loads(result.stdout or "{}")
+        except ValueError as exc:
+            raise RuntimeError("ninecli 返回了无效 JSON") from exc
+
+    def vehicles(self) -> list[dict[str, Any]]:
+        payload = self.run("vehicles")
+        values = payload if isinstance(payload, list) else payload.get("data", [])
+        return values if isinstance(values, list) else []
+
+    def dashboard(self, sn: str) -> dict[str, Any]:
+        month = datetime.now().strftime("%Y%m")
+        status = self.run("status", sn)
+        battery = self.run("battery", sn)
+        try:
+            travel = self.run("travel", sn, "--month", month)
+        except RuntimeError:
+            travel = {"month": month, "list": []}
+        return {
+            "vehicle": next((v for v in self.vehicles() if str(v.get("wnumber") or v.get("sn")) == sn), {"sn": sn, "wnumber": sn}),
+            "status": status,
+            "battery": battery,
+            "travel": travel,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def action(self, sn: str, action: str) -> Any:
+        commands = {
+            "bell": ("bell", sn),
+            "buck": ("buck", sn, "--yes"),
+            "engine_start": ("engine-start", sn, "--yes"),
+            "engine_stop": ("engine-stop", sn, "--yes"),
+        }
+        command = commands.get(action)
+        if command is None:
+            raise NotImplementedError(action)
+        return self.run(*command)
 
 
 class HomeAssistantClient:
@@ -101,8 +172,9 @@ class HomeAssistantClient:
 class NinePlusAdapter:
     def __init__(self, settings: Settings, ha: HomeAssistantClient | None = None):
         self.settings = settings
-        self.ha = ha or HomeAssistantClient(settings)
-        self.config = self._load_config()
+        self.direct = DirectNinebotClient(settings) if settings.backend == "direct" and ha is None else None
+        self.ha = ha or (None if self.direct else HomeAssistantClient(settings))
+        self.config = {"vehicles": []} if self.direct else self._load_config()
         self.session_token = secrets.token_urlsafe(24)
 
     def _load_config(self) -> dict[str, Any]:
@@ -119,6 +191,11 @@ class NinePlusAdapter:
         return config
 
     def vehicle(self, sn: str) -> dict[str, Any]:
+        if self.direct:
+            for vehicle in self.direct.vehicles():
+                if str(vehicle.get("wnumber") or vehicle.get("sn")) == sn:
+                    return vehicle
+            raise KeyError(sn)
         for vehicle in self.config["vehicles"]:
             if str(vehicle["sn"]) == sn:
                 return vehicle
@@ -184,6 +261,8 @@ class NinePlusAdapter:
         return value if value is not None else default
 
     def dashboard(self, sn: str) -> dict[str, Any]:
+        if self.direct:
+            return self.direct.dashboard(sn)
         vehicle = self.vehicle(sn)
         value = lambda key, default=None: self._entity_value(self._entity_spec(vehicle, key), default)
         battery = _number(value("battery"))
@@ -232,6 +311,8 @@ class NinePlusAdapter:
         }
 
     def action(self, sn: str, action: str) -> Any:
+        if self.direct:
+            return self.direct.action(sn, action)
         vehicle = self.vehicle(sn)
         spec = vehicle.get("services", {}).get(action)
         if not spec and vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot":
@@ -284,8 +365,13 @@ class Handler(BaseHTTPRequestHandler):
         body = self._json_body() if method == "POST" else {}
 
         if parts == ["healthz"] and method == "GET":
-            self.adapter.ha.check()
-            self._reply(HTTPStatus.OK, {"status": "ok", "home_assistant": "connected"})
+            if self.adapter.direct:
+                self.adapter.direct.vehicles()
+                backend = "ninebot-cloud"
+            else:
+                self.adapter.ha.check()
+                backend = "home-assistant"
+            self._reply(HTTPStatus.OK, {"status": "ok", "backend": backend})
             return
         if not self._authorized():
             self._reply(HTTPStatus.UNAUTHORIZED, error="Bearer Token 无效")
@@ -305,7 +391,8 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         if parts == ["vehicles"] and method == "GET":
-            self._reply(HTTPStatus.OK, {"vehicles": [self.adapter.vehicle_info(v) for v in self.adapter.config["vehicles"]]})
+            vehicles = self.adapter.direct.vehicles() if self.adapter.direct else [self.adapter.vehicle_info(v) for v in self.adapter.config["vehicles"]]
+            self._reply(HTTPStatus.OK, {"vehicles": vehicles})
             return
         if len(parts) >= 3 and parts[0] == "vehicles":
             sn, endpoint = parts[1], parts[2]
@@ -363,8 +450,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     settings = Settings.from_env()
-    if not settings.ha_token:
-        raise SystemExit("HA_TOKEN 不能为空")
+    if settings.backend != "direct" and not settings.ha_token:
+        raise SystemExit("Home Assistant 模式下 HA_TOKEN 不能为空")
     Handler.adapter = NinePlusAdapter(settings)
     host = _env("HOST", "0.0.0.0")
     port = int(_env("PORT", "19009"))
