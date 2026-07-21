@@ -125,6 +125,33 @@ class NinePlusAdapter:
         raise KeyError(sn)
 
     @staticmethod
+    def _hasscc_entity(sn: str, key: str) -> str:
+        """Entity id emitted by hasscc/ninebot's NinebotEntity class."""
+        return f"ninebot.{sn}_{key}".lower()
+
+    def _entity_spec(self, vehicle: dict[str, Any], key: str) -> Any:
+        explicit = vehicle.get("entities", {}).get(key)
+        if explicit is not None:
+            return explicit
+        if vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot":
+            aliases = {
+                "range": "endurance",
+                "powered_on": "power",
+                "locked": "lock",
+                "latitude": "location",
+                "longitude": "location",
+                "voltage": "bms_voltage",
+                "temperature": "batt_temp",
+                "total_mileage": "month_mileage",
+            }
+            entity_key = aliases.get(key, key)
+            spec: dict[str, Any] = {"entity_id": self._hasscc_entity(str(vehicle["sn"]), entity_key)}
+            if key in {"latitude", "longitude"}:
+                spec["attribute"] = key
+            return spec
+        return None
+
+    @staticmethod
     def vehicle_info(vehicle: dict[str, Any]) -> dict[str, Any]:
         return {
             "sn": str(vehicle["sn"]),
@@ -142,7 +169,10 @@ class NinePlusAdapter:
         entity_id = spec.get("entity_id")
         if not entity_id:
             return spec.get("value", default)
-        state = self.ha.state(str(entity_id))
+        try:
+            state = self.ha.state(str(entity_id))
+        except (KeyError, RuntimeError):
+            return default
         attribute = spec.get("attribute")
         value = state.get("attributes", {}).get(attribute) if attribute else state.get("state")
         mapping = spec.get("map", {})
@@ -155,42 +185,63 @@ class NinePlusAdapter:
 
     def dashboard(self, sn: str) -> dict[str, Any]:
         vehicle = self.vehicle(sn)
-        entities = vehicle.get("entities", {})
-        battery = _number(self._entity_value(entities.get("battery")))
-        charging = _bool(self._entity_value(entities.get("charging")))
-        powered = _bool(self._entity_value(entities.get("powered_on")))
-        locked = _bool(self._entity_value(entities.get("locked")))
+        value = lambda key, default=None: self._entity_value(self._entity_spec(vehicle, key), default)
+        battery = _number(value("battery"))
+        charging = _bool(value("charging"))
+        powered = _bool(value("powered_on"))
+        locked = _bool(value("locked"))
+        try:
+            last_ride_state = self.ha.state(self._hasscc_entity(sn, "last_mileage")) if vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot" else None
+        except (KeyError, RuntimeError):
+            last_ride_state = None
+        last_ride = last_ride_state.get("attributes", {}) if isinstance(last_ride_state, dict) else {}
         state = {
             "dump_energy": battery,
-            "estimate_mileage": _number(self._entity_value(entities.get("range"))),
+            "estimate_mileage": _number(value("range")),
+            "precise_estimate_mileage": _number(value("range")),
             "charging": int(charging) if charging is not None else None,
             "pwr": int(powered) if powered is not None else None,
             "lock_status": int(locked) if locked is not None else None,
-            "total_mileage": _number(self._entity_value(entities.get("total_mileage"))),
+            "total_mileage": _number(value("total_mileage")),
             "locationInfo": {
-                "locationDesc": self._entity_value(entities.get("location")),
-                "lat": _number(self._entity_value(entities.get("latitude"))),
-                "lng": _number(self._entity_value(entities.get("longitude"))),
+                "locationDesc": value("location"),
+                "lat": _number(value("latitude")),
+                "lng": _number(value("longitude")),
             },
         }
         battery_info = {
             "electricity": battery,
-            "battery_voltage": _number(self._entity_value(entities.get("voltage"))),
-            "bat_temp": _number(self._entity_value(entities.get("temperature"))),
+            "battery_voltage": _number(value("voltage")),
+            "bat_temp": _number(value("temperature")),
+            "bms_cycle": _number(value("bms_cycles")),
             "charging": int(charging) if charging is not None else None,
-            "remain_charge_time": _number(self._entity_value(entities.get("remaining_charge_time"))),
+            "remain_charge_time": _number(value("remaining_charge_time")),
         }
+        rides = [last_ride] if last_ride else []
         return {
             "vehicle": self.vehicle_info(vehicle),
             "state": {key: value for key, value in state.items() if value is not None},
             "battery": {key: value for key, value in battery_info.items() if value is not None},
-            "travel": {"month": datetime.now().strftime("%Y%m"), "list": []},
+            "travel": {
+                "month": datetime.now().strftime("%Y%m"),
+                "list": rides,
+                "total_mileages": _number(value("total_mileage")),
+                "ec": _number(value("month_energy")),
+            },
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def action(self, sn: str, action: str) -> Any:
         vehicle = self.vehicle(sn)
         spec = vehicle.get("services", {}).get(action)
+        if not spec and vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot":
+            defaults = {
+                "bell": {"service": "button.press", "data": {"entity_id": self._hasscc_entity(sn, "bell")}},
+                "buck": {"service": "button.press", "data": {"entity_id": self._hasscc_entity(sn, "bucket")}},
+                "engine_start": {"service": "lock.unlock", "data": {"entity_id": self._hasscc_entity(sn, "lock")}},
+                "engine_stop": {"service": "lock.lock", "data": {"entity_id": self._hasscc_entity(sn, "lock")}},
+            }
+            spec = defaults.get(action)
         if not spec:
             raise NotImplementedError(f"Home Assistant 未配置 {action} 服务")
         domain, separator, service = str(spec.get("service", "")).partition(".")
