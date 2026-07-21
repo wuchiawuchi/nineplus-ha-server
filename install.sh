@@ -33,8 +33,8 @@ cd "$PROJECT_DIR"
 say "下载部署文件到 $PROJECT_DIR"
 curl -fsSL "$REPO_RAW/compose.yaml" -o compose.yaml
 
-if [[ -f .env || -f config.json ]]; then
-  say "检测到旧配置，将保留原文件。删除 .env/config.json 后重跑可重新配置。"
+if [[ "${NINEPLUS_RECONFIGURE:-0}" != "1" && ( -f .env || -f config.json ) ]]; then
+  say "检测到旧配置，将保留原文件。如需重新输入账号密码，请用 NINEPLUS_RECONFIGURE=1 重跑。"
 else
   NINEBOT_USERNAME_VALUE="$(prompt '九号出行账号')"
   [[ -n "$NINEBOT_USERNAME_VALUE" ]] || die "九号账号不能为空。"
@@ -44,10 +44,12 @@ else
   APP_PASSWORD="$(secret 'NineBot+ 登录密码')"
   [[ -n "$APP_PASSWORD" ]] || die "客户端密码不能为空。"
   BEARER="$(openssl rand -hex 32)"
+  NINEBOT_PASSWORD_B64="$(printf '%s' "$NINEBOT_PASSWORD_VALUE" | base64 | tr -d '\r\n')"
+  APP_PASSWORD_B64="$(printf '%s' "$APP_PASSWORD" | base64 | tr -d '\r\n')"
 
   umask 077
-  printf 'NINEPLUS_BACKEND=direct\nNINEBOT_USERNAME=%s\nNINEBOT_PASSWORD=%s\nNINEPLUS_BEARER_TOKEN=%s\nNINEPLUS_ACCOUNT=%s\nNINEPLUS_PASSWORD=%s\n' \
-    "$NINEBOT_USERNAME_VALUE" "$NINEBOT_PASSWORD_VALUE" "$BEARER" "$APP_ACCOUNT" "$APP_PASSWORD" > .env
+  printf 'NINEPLUS_BACKEND=direct\nNINEBOT_USERNAME=%s\nNINEBOT_PASSWORD_B64=%s\nNINEPLUS_BEARER_TOKEN=%s\nNINEPLUS_ACCOUNT=%s\nNINEPLUS_PASSWORD_B64=%s\n' \
+    "$NINEBOT_USERNAME_VALUE" "$NINEBOT_PASSWORD_B64" "$BEARER" "$APP_ACCOUNT" "$APP_PASSWORD_B64" > .env
   printf '{"vehicles": []}\n' > config.json
 fi
 

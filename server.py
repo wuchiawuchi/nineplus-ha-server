@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import os
 import secrets
 import subprocess
@@ -22,6 +23,16 @@ from typing import Any
 
 def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
+
+
+def _secret_env(name: str, legacy_name: str) -> str:
+    encoded = _env(name)
+    if encoded:
+        try:
+            return base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f"{name} 不是有效的 Base64 配置") from exc
+    return _env(legacy_name)
 
 
 def _number(value: Any) -> float | int | None:
@@ -67,11 +78,11 @@ class Settings:
             ha_token=_env("HA_TOKEN"),
             bearer_token=_env("NINEPLUS_BEARER_TOKEN"),
             account=_env("NINEPLUS_ACCOUNT"),
-            password=_env("NINEPLUS_PASSWORD"),
+            password=_secret_env("NINEPLUS_PASSWORD_B64", "NINEPLUS_PASSWORD"),
             config_path=Path(_env("NINEPLUS_CONFIG", "/data/config.json")),
             backend=_env("NINEPLUS_BACKEND", "direct").lower(),
             ninebot_username=_env("NINEBOT_USERNAME"),
-            ninebot_password=_env("NINEBOT_PASSWORD"),
+            ninebot_password=_secret_env("NINEBOT_PASSWORD_B64", "NINEBOT_PASSWORD"),
             ninebot_config_dir=Path(_env("NINEBOT_CONFIG_DIR", "/data/ninebot")),
         )
 

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -140,6 +141,16 @@ class DirectNinebotTests(unittest.TestCase):
         client.action("SN1", "engine_start")
         command = run.call_args.args[0]
         self.assertEqual(command[-4:], ["engine-start", "SN1", "--yes", "--json"])
+
+    def test_base64_passwords_preserve_special_characters(self):
+        values = {
+            "NINEBOT_PASSWORD_B64": "cCQjIHdvcmQ=",
+            "NINEPLUS_PASSWORD_B64": "YXBwJCNwYXNz",
+        }
+        with patch.dict(os.environ, values, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.ninebot_password, "p$# word")
+        self.assertEqual(settings.password, "app$#pass")
 
 
 if __name__ == "__main__":
