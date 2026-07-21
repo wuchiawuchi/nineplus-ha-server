@@ -135,6 +135,35 @@ class DirectNinebotClient:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    def travel(self, sn: str, month: str) -> dict[str, Any]:
+        payload = self.run("travel", sn, "--month", month)
+        return payload if isinstance(payload, dict) else {"month": month, "list": []}
+
+    @staticmethod
+    def _travel_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        candidate: Any = payload
+        if isinstance(payload.get("data"), dict):
+            candidate = payload["data"]
+        records = candidate.get("list", []) if isinstance(candidate, dict) else []
+        return [record for record in records if isinstance(record, dict)]
+
+    def travel_detail(self, sn: str, travel_id: str) -> dict[str, Any]:
+        now = datetime.now()
+        for offset in range(24):
+            month_index = now.year * 12 + now.month - 1 - offset
+            month = f"{month_index // 12}{month_index % 12 + 1:02d}"
+            payload = self.travel(sn, month)
+            for index, record in enumerate(self._travel_records(payload)):
+                identifiers = {
+                    str(record.get(key))
+                    for key in ("travel_id", "travelId", "ride_id", "rideId", "record_id", "recordId", "id")
+                    if record.get(key) is not None
+                }
+                start = next((record.get(key) for key in ("start_time", "startTime", "begin_time", "beginTime", "stime") if record.get(key) is not None), None)
+                if travel_id in identifiers or (start is not None and travel_id == str(start)) or travel_id == str(index):
+                    return record
+        raise RuntimeError(f"未找到行程 {travel_id}")
+
     def action(self, sn: str, action: str) -> Any:
         commands = {
             "bell": ("bell", sn),
@@ -409,12 +438,21 @@ class Handler(BaseHTTPRequestHandler):
             sn, endpoint = parts[1], parts[2]
             if method == "GET" and endpoint in {"dashboard", "status", "battery"}:
                 dashboard = self.adapter.dashboard(sn)
-                value = dashboard if endpoint == "dashboard" else dashboard["state" if endpoint == "status" else "battery"]
+                status_key = "status" if self.adapter.direct else "state"
+                value = dashboard if endpoint == "dashboard" else dashboard[status_key if endpoint == "status" else "battery"]
                 self._reply(HTTPStatus.OK, value)
+                return
+            if method == "GET" and endpoint == "travel" and len(parts) == 4:
+                travel_id = urllib.parse.unquote(parts[3])
+                if self.adapter.direct:
+                    self._reply(HTTPStatus.OK, self.adapter.direct.travel_detail(sn, travel_id))
+                else:
+                    self._reply(HTTPStatus.NOT_IMPLEMENTED, error="HA 模式不提供行程详情")
                 return
             if method == "GET" and endpoint == "travel":
                 month = urllib.parse.parse_qs(parsed.query).get("month", [datetime.now().strftime("%Y%m")])[0]
-                self._reply(HTTPStatus.OK, {"month": month, "list": [], "total": 0})
+                value = self.adapter.direct.travel(sn, month) if self.adapter.direct else {"month": month, "list": [], "total": 0}
+                self._reply(HTTPStatus.OK, value)
                 return
             if method == "POST" and endpoint == "travel-sync":
                 month = urllib.parse.parse_qs(parsed.query).get("month", [datetime.now().strftime("%Y%m")])[0]
