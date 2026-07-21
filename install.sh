@@ -51,7 +51,6 @@ else
   printf '{"vehicles": []}\n' > config.json
 fi
 
-mkdir -p ninebot-data
 say "拉取并启动 NinePlus 九号直连服务"
 docker compose pull
 docker compose up -d
