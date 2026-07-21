@@ -1,0 +1,29 @@
+{
+  "vehicles": [
+    {
+      "sn": "REPLACE_WITH_VEHICLE_SN",
+      "name": "我的九号",
+      "model": "Ninebot",
+      "image_url": "",
+      "entities": {
+        "battery": "sensor.ninebot_battery",
+        "range": "sensor.ninebot_range",
+        "charging": "binary_sensor.ninebot_charging",
+        "powered_on": "binary_sensor.ninebot_power",
+        "locked": "binary_sensor.ninebot_locked",
+        "location": "sensor.ninebot_location",
+        "latitude": {"entity_id": "device_tracker.ninebot", "attribute": "latitude"},
+        "longitude": {"entity_id": "device_tracker.ninebot", "attribute": "longitude"},
+        "total_mileage": "sensor.ninebot_total_mileage",
+        "voltage": "sensor.ninebot_battery_voltage",
+        "temperature": "sensor.ninebot_battery_temperature"
+      },
+      "services": {
+        "bell": {"service": "ninebot.ring_bell", "data": {"device_id": "REPLACE_ME"}},
+        "buck": {"service": "ninebot.open_bucket", "data": {"device_id": "REPLACE_ME"}},
+        "engine_start": {"service": "ninebot.engine_start", "data": {"device_id": "REPLACE_ME"}},
+        "engine_stop": {"service": "ninebot.engine_stop", "data": {"device_id": "REPLACE_ME"}}
+      }
+    }
+  ]
+}
