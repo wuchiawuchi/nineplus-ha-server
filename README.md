@@ -48,7 +48,12 @@ python3 server.py
 ```bash
 curl http://127.0.0.1:19009/healthz
 curl -H "Authorization: Bearer 随机长字符串" http://127.0.0.1:19009/vehicles
+curl -H "Authorization: Bearer 随机长字符串" \
+  http://127.0.0.1:19009/vehicles/车辆SN/travel/行程ID
 ```
+
+行程详情接口调用 `ninecli travel SN --detail ID --json`，并原样返回九号云端的
+`trail` 轨迹点（经纬度、速度及点间距离），供 NineBot+ 绘制地图路径和速度曲线。
 
 ## Docker Compose
 

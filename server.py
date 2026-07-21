@@ -139,30 +139,11 @@ class DirectNinebotClient:
         payload = self.run("travel", sn, "--month", month)
         return payload if isinstance(payload, dict) else {"month": month, "list": []}
 
-    @staticmethod
-    def _travel_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
-        candidate: Any = payload
-        if isinstance(payload.get("data"), dict):
-            candidate = payload["data"]
-        records = candidate.get("list", []) if isinstance(candidate, dict) else []
-        return [record for record in records if isinstance(record, dict)]
-
     def travel_detail(self, sn: str, travel_id: str) -> dict[str, Any]:
-        now = datetime.now()
-        for offset in range(24):
-            month_index = now.year * 12 + now.month - 1 - offset
-            month = f"{month_index // 12}{month_index % 12 + 1:02d}"
-            payload = self.travel(sn, month)
-            for index, record in enumerate(self._travel_records(payload)):
-                identifiers = {
-                    str(record.get(key))
-                    for key in ("travel_id", "travelId", "ride_id", "rideId", "record_id", "recordId", "id")
-                    if record.get(key) is not None
-                }
-                start = next((record.get(key) for key in ("start_time", "startTime", "begin_time", "beginTime", "stime") if record.get(key) is not None), None)
-                if travel_id in identifiers or (start is not None and travel_id == str(start)) or travel_id == str(index):
-                    return record
-        raise RuntimeError(f"未找到行程 {travel_id}")
+        payload = self.run("travel", sn, "--detail", travel_id)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"行程 {travel_id} 的详情格式无效")
+        return payload
 
     def action(self, sn: str, action: str) -> Any:
         commands = {

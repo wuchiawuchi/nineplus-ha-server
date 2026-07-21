@@ -153,21 +153,20 @@ class DirectNinebotTests(unittest.TestCase):
         self.assertEqual(settings.password, "app$#pass")
 
     @patch("server.subprocess.run")
-    def test_travel_detail_finds_record_by_id(self, run):
+    def test_travel_detail_uses_ninecli_detail_and_preserves_track(self, run):
         run.return_value.returncode = 0
         run.return_value.stdout = json.dumps({
-            "list": [{
-                "travel_id": "ride-123",
-                "start_time": "2026-07-21 08:00:00",
-                "end_time": "2026-07-21 08:20:00",
-                "mileages": 6.4,
-                "used_electricity": 12,
-            }]
+            "travel_id": "ride-123",
+            "trail": [
+                {"lon": 121.4, "lat": 31.2, "speed": 12.5, "distance": 0},
+                {"lon": 121.401, "lat": 31.201, "speed": 18.0, "distance": 146},
+            ],
         })
         run.return_value.stderr = ""
         detail = DirectNinebotClient(self.settings).travel_detail("SN1", "ride-123")
-        self.assertEqual(detail["mileages"], 6.4)
-        self.assertEqual(detail["end_time"], "2026-07-21 08:20:00")
+        self.assertEqual(detail["trail"][1]["speed"], 18.0)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-5:], ["travel", "SN1", "--detail", "ride-123", "--json"])
 
 
 if __name__ == "__main__":
