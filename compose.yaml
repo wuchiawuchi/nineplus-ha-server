@@ -6,7 +6,7 @@ services:
     ports:
       - "19009:19009"
     environment:
-      HA_URL: "http://homeassistant.local:8123"
+      HA_URL: "${HA_URL:-http://homeassistant.local:8123}"
       HA_TOKEN: "${HA_TOKEN}"
       NINEPLUS_BEARER_TOKEN: "${NINEPLUS_BEARER_TOKEN}"
       NINEPLUS_ACCOUNT: "${NINEPLUS_ACCOUNT:-homeassistant}"

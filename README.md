@@ -2,6 +2,16 @@
 
 把 Home Assistant 中的九号车辆实体转换为 NineBot+ iOS 客户端使用的 HTTP API。
 
+## 一键部署
+
+在已经安装 Docker 的 Linux、NAS 或 macOS 终端执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wuchiawuchi/nineplus-ha-server/main/install.sh)
+```
+
+脚本会询问 HA 地址、长期访问令牌、车辆 SN 和客户端密码，自动生成随机 Bearer Token、拉取镜像、启动容器并进行健康检查。默认安装到当前目录的 `nineplus-ha-server`；可用 `NINEPLUS_DIR=/指定目录` 修改位置。重复运行会保留现有 `.env` 和 `config.json`。
+
 ## 前提
 
 1. Home Assistant 已能看到九号车辆实体。这个项目不会绕过九号登录，也不能修复已经失效的九号 HA 组件。
