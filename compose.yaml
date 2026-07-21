@@ -1,6 +1,6 @@
 services:
   nineplus-ha:
-    image: ghcr.io/REPLACE_GITHUB_USERNAME/nineplus-ha-server:latest
+    image: ghcr.io/wuchiawuchi/nineplus-ha-server:latest
     container_name: nineplus-ha
     restart: unless-stopped
     ports:

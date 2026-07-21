@@ -46,7 +46,7 @@ curl -H "Authorization: Bearer 随机长字符串" http://127.0.0.1:19009/vehicl
 
 ## Docker Compose
 
-把 `compose.yaml` 中的 `REPLACE_GITHUB_USERNAME` 换成 GitHub 用户名，然后：
+仓库中的 `compose.yaml` 已配置为拉取本项目发布的镜像：
 
 ```bash
 docker compose up -d
