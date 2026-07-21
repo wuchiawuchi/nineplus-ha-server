@@ -8,22 +8,40 @@
 2. 在 HA 个人资料页创建“长期访问令牌”。
 3. 运行服务的机器可以访问 HA 的 `8123` 端口。
 
-## 配置实体
+## 安装 hasscc/ninebot
 
-在 HA 的“开发者工具 → 状态”中搜索 `ninebot`，记下实际实体 ID。复制配置模板：
+先在 Home Assistant 安装并成功登录 [hasscc/ninebot](https://github.com/hasscc/ninebot)。确认 HA 中已经出现电量、续航、定位、鸣笛、座桶和车锁等实体；适配器不保存九号账号密码，九号云端登录完全由该 HA 组件负责。
+
+## 配置车辆
+
+复制配置模板：
 
 ```bash
 cp config.example.json config.json
 cp .env.example .env
 ```
 
-编辑 `config.json`，把示例实体 ID 替换为 HA 中真实存在的 ID。不存在的字段可以删除。实体也可读取 attribute：
+`hasscc/ninebot` 模式只需填写车辆 SN、显示名称和型号：
 
 ```json
-{"entity_id": "device_tracker.ninebot", "attribute": "latitude"}
+{
+  "vehicles": [{
+    "sn": "你的车辆SN",
+    "name": "我的九号",
+    "model": "Ninebot",
+    "integration": "hasscc/ninebot"
+  }]
+}
 ```
 
-如果组件没有提供控制服务，请删除 `services` 中对应项目。服务端会返回 501，而不会假装控制成功。
+适配器会按照该组件源码自动读取 `ninebot.<sn>_battery`、`endurance`、`location`、`month_mileage`、`bms_voltage` 等实体，并自动映射控制：
+
+- 寻车：`button.press` → `ninebot.<sn>_bell`
+- 开座桶：`button.press` → `ninebot.<sn>_bucket`
+- 启动：`lock.unlock` → `ninebot.<sn>_lock`
+- 熄火：`lock.lock` → `ninebot.<sn>_lock`
+
+实体 ID 曾被你在 HA 中手工改名时，可以在车辆下增加 `entities` 或 `services` 覆盖自动值；格式参见程序的通用配置兼容逻辑。实体暂时不可用不会拖垮整个仪表盘，相应字段会留空。
 
 ## 本地运行
 
@@ -79,8 +97,8 @@ docker compose logs -f nineplus-ha
 
 - 健康检查、客户端登录
 - 车辆列表、仪表盘、状态、电池
-- 空行程列表与基础预测兼容响应
-- HA 服务映射：响铃、开座桶、上电、熄火
+- 读取 hasscc/ninebot 的电量、续航、充电、上电、锁定、位置、月里程、最近骑行、电池电压/温度/循环数据
+- HA 标准实体控制：响铃、开座桶、启动、熄火
 - 推送注册兼容响应（本适配器不发送 APNs）
 
-历史行程、预测模型和 APNs 需要额外数据库/推送基础设施，目前不包含。
+完整历史行程（HA 组件只暴露最近一次与月汇总）、预测模型和 APNs 需要额外数据库/推送基础设施，目前不包含。
