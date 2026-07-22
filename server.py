@@ -135,6 +135,10 @@ class AccountStore:
     def _account_id(account: str) -> str:
         return hashlib.sha256(account.casefold().encode("utf-8")).hexdigest()[:24]
 
+    @staticmethod
+    def _is_mobile_phone(value: str) -> bool:
+        return len(value) == 11 and value.isascii() and value.isdigit() and value[0] == "1" and value[1] in "3456789"
+
     def _migrate_legacy_account(self) -> None:
         if self._accounts or not self.settings.account or not self.settings.password:
             return
@@ -198,8 +202,12 @@ class AccountStore:
         ninebot_username = ninebot_username.strip()
         if not app_account or not app_password or not ninebot_username or not ninebot_password:
             raise ValueError("NineBot+ 账号、NineBot+ 密码、九号账号和九号密码均不能为空")
-        if len(app_password) < 6:
-            raise ValueError("NineBot+ 密码至少需要 6 位")
+        if not self._is_mobile_phone(app_account):
+            raise ValueError("NineBot+ 账号必须是有效的手机号")
+        if len(app_password) < 8:
+            raise ValueError("NineBot+ 密码至少需要 8 位")
+        if not self._is_mobile_phone(ninebot_username):
+            raise ValueError("九号出行账号必须是有效的手机号")
         with self._lock:
             if app_account in self._accounts:
                 raise ValueError("NineBot+ 账号已存在")
@@ -621,7 +629,7 @@ class Handler(BaseHTTPRequestHandler):
         notice = f'<p class="ok">{html.escape(message)}</p>' if message else ""
         notice += f'<p class="error">{html.escape(error)}</p>' if error else ""
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 账号管理</title><style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1>{notice}<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号</label><input name="app_account" autocomplete="username" required><label>NineBot+ 登录密码</label><input name="app_password" type="password" autocomplete="new-password" minlength="6" required><label>九号出行账号</label><input name="ninebot_username" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section><section><h2>已有账号</h2><table><thead><tr><th>NineBot+ 账号</th><th>九号账号</th><th>创建时间</th></tr></thead><tbody>{rows or '<tr><td colspan="3">暂无账号</td></tr>'}</tbody></table></section></main></body></html>"""
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1>{notice}<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号（手机号）</label><input name="app_account" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>NineBot+ 登录密码（至少 8 位）</label><input name="app_password" type="password" autocomplete="new-password" minlength="8" required><label>九号出行账号（手机号）</label><input name="ninebot_username" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section><section><h2>已有账号</h2><table><thead><tr><th>NineBot+ 账号</th><th>九号账号</th><th>创建时间</th></tr></thead><tbody>{rows or '<tr><td colspan="3">暂无账号</td></tr>'}</tbody></table></section></main></body></html>"""
 
     def _admin_login_page(self, error: str = "") -> str:
         notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""

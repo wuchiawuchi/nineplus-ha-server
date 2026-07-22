@@ -188,16 +188,30 @@ class MultiAccountTests(unittest.TestCase):
         run.return_value.stdout = "[]"
         run.return_value.stderr = ""
         store = AccountStore(self.settings)
-        first = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
-        second = store.add_account("bob", "bob-password", "13800000002", "ninebot-b")
+        first = store.add_account("13900000001", "alice-pass", "13800000001", "ninebot-a")
+        second = store.add_account("13900000002", "bob-password", "13800000002", "ninebot-b")
 
         payload = json.loads(self.settings.accounts_path.read_text(encoding="utf-8"))
         serialized = json.dumps(payload)
         self.assertNotIn("alice-pass", serialized)
         self.assertNotIn("ninebot-a", serialized)
         self.assertNotEqual(first["config_dir"], second["config_dir"])
-        self.assertIsNotNone(store.authenticate("alice", "alice-pass"))
-        self.assertIsNone(store.authenticate("alice", "wrong-pass"))
+        self.assertIsNotNone(store.authenticate("13900000001", "alice-pass"))
+        self.assertIsNone(store.authenticate("13900000001", "wrong-pass"))
+
+    @patch("server.subprocess.run")
+    def test_new_accounts_require_mobile_numbers_and_eight_character_passwords(self, run):
+        store = AccountStore(self.settings)
+        invalid_cases = [
+            ("alice", "alice-pass", "13800000001", "NineBot+ 账号"),
+            ("13900000001", "short7", "13800000001", "至少需要 8 位"),
+            ("13900000001", "alice-pass", "ninebot", "九号出行账号"),
+        ]
+        for app_account, app_password, ninebot_username, message in invalid_cases:
+            with self.subTest(message=message), self.assertRaises(ValueError) as error:
+                store.add_account(app_account, app_password, ninebot_username, "ninebot-a")
+            self.assertIn(message, str(error.exception))
+        run.assert_not_called()
 
     def test_admin_password_is_initialized_on_first_use_and_persisted(self):
         settings = self.settings
@@ -220,15 +234,15 @@ class MultiAccountTests(unittest.TestCase):
         run.return_value.stdout = "[]"
         run.return_value.stderr = ""
         store = AccountStore(self.settings)
-        alice = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
-        bob = store.add_account("bob", "bob-password", "13800000002", "ninebot-b")
+        alice = store.add_account("13900000001", "alice-pass", "13800000001", "ninebot-a")
+        bob = store.add_account("13900000002", "bob-password", "13800000002", "ninebot-b")
         (Path(alice["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
         (Path(bob["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
         adapter = NinePlusAdapter(self.settings)
 
-        self.assertIsNone(adapter.login("alice", "wrong-pass"))
-        alice_login = adapter.login("alice", "alice-pass")
-        bob_login = adapter.login("bob", "bob-password")
+        self.assertIsNone(adapter.login("13900000001", "wrong-pass"))
+        alice_login = adapter.login("13900000001", "alice-pass")
+        bob_login = adapter.login("13900000002", "bob-password")
         self.assertIsNotNone(alice_login)
         self.assertIsNotNone(bob_login)
         alice_client = adapter.client_for_session(alice_login["session_token"])
