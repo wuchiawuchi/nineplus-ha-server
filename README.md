@@ -70,6 +70,22 @@ docker compose up -d
 docker compose logs -f nineplus
 ```
 
+### 一键更新
+
+在服务器部署目录执行以下命令，会拉取最新镜像并重建容器，同时保留 `.env` 和 Docker 数据卷中的账号数据：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wuchiawuchi/nineplus-ha-server/main/update.sh)
+```
+
+也可以指定部署目录：
+
+```bash
+NINEPLUS_DIR=/指定目录 bash <(curl -fsSL https://raw.githubusercontent.com/wuchiawuchi/nineplus-ha-server/main/update.sh)
+```
+
+脚本不会执行 `docker compose down -v`，因此不会删除已有账号、管理员密码或九号令牌。
+
 ## GitHub Actions
 
 将整个目录推送到 GitHub，工作流会：
