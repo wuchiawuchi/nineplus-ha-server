@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
+import hmac
+import html
 import os
 import secrets
 import subprocess
@@ -70,6 +73,8 @@ class Settings:
     ninebot_username: str = ""
     ninebot_password: str = ""
     ninebot_config_dir: Path = Path("/data/ninebot")
+    accounts_path: Path = Path("/data/ninebot/accounts.json")
+    admin_password: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -84,6 +89,121 @@ class Settings:
             ninebot_username=_env("NINEBOT_USERNAME"),
             ninebot_password=_secret_env("NINEBOT_PASSWORD_B64", "NINEBOT_PASSWORD"),
             ninebot_config_dir=Path(_env("NINEBOT_CONFIG_DIR", "/data/ninebot")),
+            accounts_path=Path(_env("NINEPLUS_ACCOUNTS", "/data/ninebot/accounts.json")),
+            admin_password=_secret_env("NINEPLUS_ADMIN_PASSWORD_B64", "NINEPLUS_ADMIN_PASSWORD") or _secret_env("NINEPLUS_PASSWORD_B64", "NINEPLUS_PASSWORD"),
+        )
+
+
+class AccountStore:
+    """Persistent NineBot+ users with isolated ninecli token directories."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.path = settings.accounts_path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._accounts = self._load()
+        self._migrate_legacy_account()
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        with self.path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        values = payload.get("accounts", payload) if isinstance(payload, dict) else {}
+        if not isinstance(values, dict):
+            raise RuntimeError("accounts.json 格式无效")
+        return {str(key): value for key, value in values.items() if isinstance(value, dict)}
+
+    def _save(self) -> None:
+        temporary = self.path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "accounts": self._accounts}, handle, ensure_ascii=False, indent=2)
+        os.chmod(temporary, 0o600)
+        temporary.replace(self.path)
+
+    @staticmethod
+    def _password_hash(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+        salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 210_000)
+        return salt.hex(), digest.hex()
+
+    @staticmethod
+    def _account_id(account: str) -> str:
+        return hashlib.sha256(account.casefold().encode("utf-8")).hexdigest()[:24]
+
+    def _migrate_legacy_account(self) -> None:
+        if self._accounts or not self.settings.account or not self.settings.password:
+            return
+        salt, digest = self._password_hash(self.settings.password)
+        self._accounts[self.settings.account] = {
+            "account_id": self._account_id(self.settings.account),
+            "password_salt": salt,
+            "password_hash": digest,
+            "ninebot_username": self.settings.ninebot_username,
+            "config_dir": str(self.settings.ninebot_config_dir),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "migrated": True,
+        }
+        self._save()
+
+    def list_accounts(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "account": account,
+                    "ninebot_username": record.get("ninebot_username", ""),
+                    "created_at": record.get("created_at", ""),
+                }
+                for account, record in sorted(self._accounts.items())
+            ]
+
+    def authenticate(self, account: str, password: str) -> dict[str, Any] | None:
+        with self._lock:
+            record = self._accounts.get(account)
+            if not record:
+                return None
+            _, digest = self._password_hash(password, str(record.get("password_salt", "")))
+            return dict(record) if hmac.compare_digest(digest, str(record.get("password_hash", ""))) else None
+
+    def add_account(self, app_account: str, app_password: str, ninebot_username: str, ninebot_password: str) -> dict[str, Any]:
+        app_account = app_account.strip()
+        ninebot_username = ninebot_username.strip()
+        if not app_account or not app_password or not ninebot_username or not ninebot_password:
+            raise ValueError("NineBot+ 账号、NineBot+ 密码、九号账号和九号密码均不能为空")
+        if len(app_password) < 6:
+            raise ValueError("NineBot+ 密码至少需要 6 位")
+        with self._lock:
+            if app_account in self._accounts:
+                raise ValueError("NineBot+ 账号已存在")
+            account_id = self._account_id(app_account)
+            config_dir = self.settings.ninebot_config_dir / "accounts" / account_id
+            account_settings = self._settings_for(config_dir, ninebot_username, ninebot_password)
+            client = DirectNinebotClient(account_settings)
+            vehicles = client.vehicles()  # Validate the Ninebot login before persisting the user.
+            salt, digest = self._password_hash(app_password)
+            record = {
+                "account_id": account_id,
+                "password_salt": salt,
+                "password_hash": digest,
+                "ninebot_username": ninebot_username,
+                "config_dir": str(config_dir),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._accounts[app_account] = record
+            self._save()
+            return {"account": app_account, "vehicle_count": len(vehicles), **record}
+
+    def client_settings(self, record: dict[str, Any]) -> Settings:
+        return self._settings_for(Path(str(record["config_dir"])), str(record.get("ninebot_username", "")), "")
+
+    def _settings_for(self, config_dir: Path, username: str, password: str) -> Settings:
+        return Settings(
+            self.settings.ha_url, self.settings.ha_token, self.settings.bearer_token,
+            self.settings.account, self.settings.password, self.settings.config_path,
+            backend="direct", ninebot_username=username, ninebot_password=password,
+            ninebot_config_dir=config_dir, accounts_path=self.settings.accounts_path,
+            admin_password=self.settings.admin_password,
         )
 
 
@@ -118,6 +238,10 @@ class DirectNinebotClient:
         payload = self.run("vehicles")
         values = payload if isinstance(payload, list) else payload.get("data", [])
         return values if isinstance(values, list) else []
+
+    def ensure_vehicle(self, sn: str) -> None:
+        if not any(str(vehicle.get("wnumber") or vehicle.get("sn")) == sn for vehicle in self.vehicles()):
+            raise KeyError(sn)
 
     def dashboard(self, sn: str) -> dict[str, Any]:
         month = datetime.now().strftime("%Y%m")
@@ -193,10 +317,56 @@ class HomeAssistantClient:
 class NinePlusAdapter:
     def __init__(self, settings: Settings, ha: HomeAssistantClient | None = None):
         self.settings = settings
-        self.direct = DirectNinebotClient(settings) if settings.backend == "direct" and ha is None else None
-        self.ha = ha or (None if self.direct else HomeAssistantClient(settings))
-        self.config = {"vehicles": []} if self.direct else self._load_config()
-        self.session_token = secrets.token_urlsafe(24)
+        self.account_store = AccountStore(settings) if settings.backend == "direct" and ha is None else None
+        self.direct = None
+        self.ha = ha or (None if self.account_store else HomeAssistantClient(settings))
+        self.config = {"vehicles": []} if self.account_store else self._load_config()
+        self._sessions: dict[str, tuple[str, dict[str, Any]]] = {}
+        self._clients: dict[str, DirectNinebotClient] = {}
+        self._session_lock = threading.RLock()
+        self._admin_sessions: set[str] = set()
+
+    def login(self, account: str, password: str) -> dict[str, Any] | None:
+        if not self.account_store:
+            configured_account = self.settings.account
+            configured_password = self.settings.password
+            if configured_account and account != configured_account:
+                return None
+            if configured_password and password != configured_password:
+                return None
+            record: dict[str, Any] = {}
+        else:
+            record = self.account_store.authenticate(account, password) or {}
+            if not record:
+                return None
+        token = secrets.token_urlsafe(32)
+        with self._session_lock:
+            self._sessions[token] = (account, record)
+        return {"phone": account, "session_token": token}
+
+    def client_for_session(self, token: str) -> DirectNinebotClient | None:
+        if not self.account_store:
+            return None
+        with self._session_lock:
+            session = self._sessions.get(token)
+            if not session:
+                return None
+            account, record = session
+            client = self._clients.get(account)
+            if client is None:
+                client = DirectNinebotClient(self.account_store.client_settings(record))
+                self._clients[account] = client
+            return client
+
+    def new_admin_session(self) -> str:
+        token = secrets.token_urlsafe(32)
+        with self._session_lock:
+            self._admin_sessions.add(token)
+        return token
+
+    def is_admin_session(self, token: str) -> bool:
+        with self._session_lock:
+            return token in self._admin_sessions
 
     def _load_config(self) -> dict[str, Any]:
         if not self.settings.config_path.exists():
@@ -359,11 +529,15 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"{self.address_string()} - {fmt % args}", file=sys.stderr)
 
-    def _json_body(self) -> dict[str, Any]:
+    def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length == 0:
             return {}
-        return json.loads(self.rfile.read(length))
+        raw = self.rfile.read(length)
+        if "application/x-www-form-urlencoded" in self.headers.get("Content-Type", ""):
+            values = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
+            return {key: items[-1] for key, items in values.items()}
+        return json.loads(raw)
 
     def _reply(self, status: int, data: Any = None, error: str | None = None) -> None:
         payload = {"ok": error is None}
@@ -375,6 +549,43 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _html_reply(self, status: int, document: str, cookie: str | None = None) -> None:
+        encoded = document.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _admin_token(self) -> str:
+        cookies = self.headers.get("Cookie", "")
+        for item in cookies.split(";"):
+            key, separator, value = item.strip().partition("=")
+            if separator and key == "nineplus_admin":
+                return value
+        return ""
+
+    def _admin_page(self, message: str = "", error: str = "") -> str:
+        rows = ""
+        if self.adapter.account_store:
+            for account in self.adapter.account_store.list_accounts():
+                rows += (
+                    "<tr><td>" + html.escape(str(account["account"])) + "</td><td>" +
+                    html.escape(str(account["ninebot_username"])) + "</td><td>" +
+                    html.escape(str(account["created_at"])) + "</td></tr>"
+                )
+        notice = f'<p class="ok">{html.escape(message)}</p>' if message else ""
+        notice += f'<p class="error">{html.escape(error)}</p>' if error else ""
+        return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 账号管理</title><style>
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1>{notice}<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号</label><input name="app_account" autocomplete="username" required><label>NineBot+ 登录密码</label><input name="app_password" type="password" autocomplete="new-password" minlength="6" required><label>九号出行账号</label><input name="ninebot_username" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section><section><h2>已有账号</h2><table><thead><tr><th>NineBot+ 账号</th><th>九号账号</th><th>创建时间</th></tr></thead><tbody>{rows or '<tr><td colspan="3">暂无账号</td></tr>'}</tbody></table></section></main></body></html>"""
+
+    def _admin_login_page(self, error: str = "") -> str:
+        notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
+        return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 后台登录</title></head><body style="font-family:-apple-system,sans-serif;background:#f4f6f8"><main style="max-width:420px;margin:80px auto;background:white;padding:28px;border-radius:16px"><h1>NinePlus 后台</h1>{notice}<form method="post" action="/admin/login"><label>管理员密码</label><input name="password" type="password" required style="box-sizing:border-box;width:100%;padding:12px;margin:8px 0;border:1px solid #ccd2d8;border-radius:9px"><button style="padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white">登录</button></form></main></body></html>"""
+
     def _authorized(self) -> bool:
         required = self.adapter.settings.bearer_token
         return not required or self.headers.get("Authorization") == f"Bearer {required}"
@@ -383,56 +594,95 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         parts = [part for part in parsed.path.split("/") if part]
         method = self.command
-        body = self._json_body() if method == "POST" else {}
+        body = self._body() if method == "POST" else {}
+
+        if parts == ["admin", "login"] and method == "POST":
+            if not self.adapter.settings.admin_password:
+                self._html_reply(HTTPStatus.SERVICE_UNAVAILABLE, self._admin_login_page("请先配置 NINEPLUS_ADMIN_PASSWORD"))
+                return
+            if not hmac.compare_digest(str(body.get("password", "")), self.adapter.settings.admin_password):
+                self._html_reply(HTTPStatus.UNAUTHORIZED, self._admin_login_page("管理员密码错误"))
+                return
+            token = self.adapter.new_admin_session()
+            self._html_reply(HTTPStatus.SEE_OTHER, '<meta http-equiv="refresh" content="0;url=/admin">', f"nineplus_admin={token}; Path=/admin; HttpOnly; SameSite=Strict")
+            return
+        if parts == ["admin"] and method == "GET":
+            if not self.adapter.is_admin_session(self._admin_token()):
+                self._html_reply(HTTPStatus.OK, self._admin_login_page())
+            else:
+                query = urllib.parse.parse_qs(parsed.query)
+                self._html_reply(HTTPStatus.OK, self._admin_page(query.get("message", [""])[0], query.get("error", [""])[0]))
+            return
+        if parts == ["admin", "accounts"] and method == "POST":
+            if not self.adapter.is_admin_session(self._admin_token()):
+                self._html_reply(HTTPStatus.UNAUTHORIZED, self._admin_login_page("登录已失效"))
+                return
+            if not self.adapter.account_store:
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_page(error="仅直连模式支持多账号"))
+                return
+            try:
+                result = self.adapter.account_store.add_account(
+                    str(body.get("app_account", "")), str(body.get("app_password", "")),
+                    str(body.get("ninebot_username", "")), str(body.get("ninebot_password", "")),
+                )
+                message = f"账号添加成功，发现 {result['vehicle_count']} 辆车"
+                self.send_response(HTTPStatus.SEE_OTHER)
+                self.send_header("Location", "/admin?" + urllib.parse.urlencode({"message": message}))
+                self.end_headers()
+            except (RuntimeError, ValueError) as exc:
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_page(error=str(exc)))
+            return
 
         if parts == ["healthz"] and method == "GET":
-            if self.adapter.direct:
-                self.adapter.direct.vehicles()
-                backend = "ninebot-cloud"
+            if self.adapter.account_store:
+                backend = "ninebot-cloud-multi-account"
+                account_count = len(self.adapter.account_store.list_accounts())
             else:
                 self.adapter.ha.check()
                 backend = "home-assistant"
-            self._reply(HTTPStatus.OK, {"status": "ok", "backend": backend})
+                account_count = 1
+            self._reply(HTTPStatus.OK, {"status": "ok", "backend": backend, "accounts": account_count})
             return
         if not self._authorized():
             self._reply(HTTPStatus.UNAUTHORIZED, error="Bearer Token 无效")
             return
         if parts == ["accounts", "login"] and method == "POST":
-            configured_account = self.adapter.settings.account
-            configured_password = self.adapter.settings.password
-            if configured_account and body.get("account") != configured_account:
-                self._reply(HTTPStatus.UNAUTHORIZED, error="账号错误")
+            result = self.adapter.login(str(body.get("account", "")), str(body.get("password", "")))
+            if not result:
+                self._reply(HTTPStatus.UNAUTHORIZED, error="账号或密码错误")
                 return
-            if configured_password and body.get("password") != configured_password:
-                self._reply(HTTPStatus.UNAUTHORIZED, error="密码错误")
-                return
-            self._reply(HTTPStatus.OK, {
-                "phone": body.get("account", "home-assistant"),
-                "session_token": self.adapter.session_token,
-            })
+            self._reply(HTTPStatus.OK, result)
             return
+        direct_client = None
+        if self.adapter.account_store:
+            direct_client = self.adapter.client_for_session(self.headers.get("X-NinePlus-Session", ""))
+            if direct_client is None:
+                self._reply(HTTPStatus.UNAUTHORIZED, error="登录会话无效，请重新登录")
+                return
         if parts == ["vehicles"] and method == "GET":
-            vehicles = self.adapter.direct.vehicles() if self.adapter.direct else [self.adapter.vehicle_info(v) for v in self.adapter.config["vehicles"]]
+            vehicles = direct_client.vehicles() if direct_client else [self.adapter.vehicle_info(v) for v in self.adapter.config["vehicles"]]
             self._reply(HTTPStatus.OK, {"vehicles": vehicles})
             return
         if len(parts) >= 3 and parts[0] == "vehicles":
             sn, endpoint = parts[1], parts[2]
+            if direct_client:
+                direct_client.ensure_vehicle(sn)
             if method == "GET" and endpoint in {"dashboard", "status", "battery"}:
-                dashboard = self.adapter.dashboard(sn)
-                status_key = "status" if self.adapter.direct else "state"
+                dashboard = direct_client.dashboard(sn) if direct_client else self.adapter.dashboard(sn)
+                status_key = "status" if direct_client else "state"
                 value = dashboard if endpoint == "dashboard" else dashboard[status_key if endpoint == "status" else "battery"]
                 self._reply(HTTPStatus.OK, value)
                 return
             if method == "GET" and endpoint == "travel" and len(parts) == 4:
                 travel_id = urllib.parse.unquote(parts[3])
-                if self.adapter.direct:
-                    self._reply(HTTPStatus.OK, self.adapter.direct.travel_detail(sn, travel_id))
+                if direct_client:
+                    self._reply(HTTPStatus.OK, direct_client.travel_detail(sn, travel_id))
                 else:
                     self._reply(HTTPStatus.NOT_IMPLEMENTED, error="HA 模式不提供行程详情")
                 return
             if method == "GET" and endpoint == "travel":
                 month = urllib.parse.parse_qs(parsed.query).get("month", [datetime.now().strftime("%Y%m")])[0]
-                value = self.adapter.direct.travel(sn, month) if self.adapter.direct else {"month": month, "list": [], "total": 0}
+                value = direct_client.travel(sn, month) if direct_client else {"month": month, "list": [], "total": 0}
                 self._reply(HTTPStatus.OK, value)
                 return
             if method == "POST" and endpoint == "travel-sync":
@@ -451,7 +701,7 @@ class Handler(BaseHTTPRequestHandler):
             elif method == "POST" and len(parts) == 4 and endpoint == "engine" and parts[3] in {"start", "stop"}:
                 action = f"engine_{parts[3]}"
             if action:
-                self._reply(HTTPStatus.OK, self.adapter.action(sn, action))
+                self._reply(HTTPStatus.OK, direct_client.action(sn, action) if direct_client else self.adapter.action(sn, action))
                 return
         if method == "POST" and tuple(parts) in {("devices", "register"), ("live-activities", "register")}:
             self._reply(HTTPStatus.OK, {"accepted": False, "reason": "HA adapter does not provide APNs"})
@@ -482,6 +732,8 @@ def main() -> None:
     settings = Settings.from_env()
     if settings.backend != "direct" and not settings.ha_token:
         raise SystemExit("Home Assistant 模式下 HA_TOKEN 不能为空")
+    if settings.backend == "direct" and not settings.admin_password:
+        raise SystemExit("直连模式下 NINEPLUS_ADMIN_PASSWORD 不能为空")
     Handler.adapter = NinePlusAdapter(settings)
     host = _env("HOST", "0.0.0.0")
     port = int(_env("PORT", "19009"))

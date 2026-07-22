@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
-from server import DirectNinebotClient, NinePlusAdapter, Settings
+from server import AccountStore, DirectNinebotClient, NinePlusAdapter, Settings
 
 
 class FakeHA:
@@ -167,6 +167,53 @@ class DirectNinebotTests(unittest.TestCase):
         self.assertEqual(detail["trail"][1]["speed"], 18.0)
         command = run.call_args.args[0]
         self.assertEqual(command[-5:], ["travel", "SN1", "--detail", "ride-123", "--json"])
+
+
+class MultiAccountTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.settings = Settings(
+            "", "", "gateway-token", "", "", root / "config.json",
+            backend="direct", ninebot_config_dir=root / "ninebot",
+            accounts_path=root / "ninebot" / "accounts.json", admin_password="admin-secret",
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @patch("server.subprocess.run")
+    def test_accounts_have_hashed_passwords_and_isolated_tokens(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "[]"
+        run.return_value.stderr = ""
+        store = AccountStore(self.settings)
+        first = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
+        second = store.add_account("bob", "bob-password", "13800000002", "ninebot-b")
+
+        payload = json.loads(self.settings.accounts_path.read_text(encoding="utf-8"))
+        serialized = json.dumps(payload)
+        self.assertNotIn("alice-pass", serialized)
+        self.assertNotIn("ninebot-a", serialized)
+        self.assertNotEqual(first["config_dir"], second["config_dir"])
+        self.assertIsNotNone(store.authenticate("alice", "alice-pass"))
+        self.assertIsNone(store.authenticate("alice", "wrong-pass"))
+
+    @patch("server.subprocess.run")
+    def test_adapter_session_resolves_only_authenticated_account(self, run):
+        run.return_value.returncode = 0
+        run.return_value.stdout = "[]"
+        run.return_value.stderr = ""
+        store = AccountStore(self.settings)
+        created = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
+        (Path(created["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
+        adapter = NinePlusAdapter(self.settings)
+
+        self.assertIsNone(adapter.login("alice", "wrong-pass"))
+        login = adapter.login("alice", "alice-pass")
+        self.assertIsNotNone(login)
+        self.assertIsNotNone(adapter.client_for_session(login["session_token"]))
+        self.assertIsNone(adapter.client_for_session("invalid-session"))
 
 
 if __name__ == "__main__":

@@ -36,20 +36,14 @@ curl -fsSL "$REPO_RAW/compose.yaml" -o compose.yaml
 if [[ "${NINEPLUS_RECONFIGURE:-0}" != "1" && ( -f .env || -f config.json ) ]]; then
   say "检测到旧配置，将保留原文件。如需重新输入账号密码，请用 NINEPLUS_RECONFIGURE=1 重跑。"
 else
-  NINEBOT_USERNAME_VALUE="$(prompt '九号出行账号')"
-  [[ -n "$NINEBOT_USERNAME_VALUE" ]] || die "九号账号不能为空。"
-  NINEBOT_PASSWORD_VALUE="$(secret '九号出行密码')"
-  [[ -n "$NINEBOT_PASSWORD_VALUE" ]] || die "九号密码不能为空。"
-  APP_ACCOUNT="$(prompt 'NineBot+ 登录账号' 'homeassistant')"
-  APP_PASSWORD="$(secret 'NineBot+ 登录密码')"
-  [[ -n "$APP_PASSWORD" ]] || die "客户端密码不能为空。"
+  ADMIN_PASSWORD="$(secret 'NinePlus 后台管理员密码')"
+  [[ ${#ADMIN_PASSWORD} -ge 8 ]] || die "管理员密码至少需要 8 位。"
   BEARER="$(openssl rand -hex 32)"
-  NINEBOT_PASSWORD_B64="$(printf '%s' "$NINEBOT_PASSWORD_VALUE" | base64 | tr -d '\r\n')"
-  APP_PASSWORD_B64="$(printf '%s' "$APP_PASSWORD" | base64 | tr -d '\r\n')"
+  ADMIN_PASSWORD_B64="$(printf '%s' "$ADMIN_PASSWORD" | base64 | tr -d '\r\n')"
 
   umask 077
-  printf 'NINEPLUS_BACKEND=direct\nNINEBOT_USERNAME=%s\nNINEBOT_PASSWORD_B64=%s\nNINEPLUS_BEARER_TOKEN=%s\nNINEPLUS_ACCOUNT=%s\nNINEPLUS_PASSWORD_B64=%s\n' \
-    "$NINEBOT_USERNAME_VALUE" "$NINEBOT_PASSWORD_B64" "$BEARER" "$APP_ACCOUNT" "$APP_PASSWORD_B64" > .env
+  printf 'NINEPLUS_BACKEND=direct\nNINEPLUS_BEARER_TOKEN=%s\nNINEPLUS_ADMIN_PASSWORD_B64=%s\n' \
+    "$BEARER" "$ADMIN_PASSWORD_B64" > .env
   printf '{"vehicles": []}\n' > config.json
 fi
 
@@ -65,8 +59,9 @@ for _ in {1..20}; do
     # shellcheck disable=SC1091
     source .env
     say "部署成功。"
-    printf 'iPhone 服务器地址：http://%s:19009\n登录账号：%s\n登录密码：你刚设置的 NineBot+ 密码\nBearer Token：%s\n' \
-      "$LOCAL_IP" "$NINEPLUS_ACCOUNT" "$NINEPLUS_BEARER_TOKEN"
+    printf '后台管理地址：http://%s:19009/admin\niPhone 服务器地址：http://%s:19009\nBearer Token：%s\n' \
+      "$LOCAL_IP" "$LOCAL_IP" "$NINEPLUS_BEARER_TOKEN"
+    say "请先打开后台页面，新增 NineBot+ 账号及对应的九号出行账号。"
     exit 0
   fi
   sleep 2
