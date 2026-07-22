@@ -205,14 +205,22 @@ class MultiAccountTests(unittest.TestCase):
         run.return_value.stdout = "[]"
         run.return_value.stderr = ""
         store = AccountStore(self.settings)
-        created = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
-        (Path(created["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
+        alice = store.add_account("alice", "alice-pass", "13800000001", "ninebot-a")
+        bob = store.add_account("bob", "bob-password", "13800000002", "ninebot-b")
+        (Path(alice["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
+        (Path(bob["config_dir"]) / "tokens.json").write_text("{}", encoding="utf-8")
         adapter = NinePlusAdapter(self.settings)
 
         self.assertIsNone(adapter.login("alice", "wrong-pass"))
-        login = adapter.login("alice", "alice-pass")
-        self.assertIsNotNone(login)
-        self.assertIsNotNone(adapter.client_for_session(login["session_token"]))
+        alice_login = adapter.login("alice", "alice-pass")
+        bob_login = adapter.login("bob", "bob-password")
+        self.assertIsNotNone(alice_login)
+        self.assertIsNotNone(bob_login)
+        alice_client = adapter.client_for_session(alice_login["session_token"])
+        bob_client = adapter.client_for_session(bob_login["session_token"])
+        self.assertIsNotNone(alice_client)
+        self.assertIsNotNone(bob_client)
+        self.assertNotEqual(alice_client.settings.ninebot_config_dir, bob_client.settings.ninebot_config_dir)
         self.assertIsNone(adapter.client_for_session("invalid-session"))
 
 
