@@ -199,6 +199,21 @@ class MultiAccountTests(unittest.TestCase):
         self.assertIsNotNone(store.authenticate("alice", "alice-pass"))
         self.assertIsNone(store.authenticate("alice", "wrong-pass"))
 
+    def test_admin_password_is_initialized_on_first_use_and_persisted(self):
+        settings = self.settings
+        settings = Settings(
+            settings.ha_url, settings.ha_token, settings.bearer_token, settings.account,
+            settings.password, settings.config_path, backend="direct",
+            ninebot_config_dir=settings.ninebot_config_dir, accounts_path=settings.accounts_path,
+            admin_password="",
+        )
+        store = AccountStore(settings)
+        self.assertFalse(store.admin_configured())
+        store.setup_admin("admin-pass")
+        self.assertTrue(store.admin_configured())
+        self.assertTrue(store.authenticate_admin("admin-pass"))
+        self.assertFalse(store.authenticate_admin("wrong-pass"))
+
     @patch("server.subprocess.run")
     def test_adapter_session_resolves_only_authenticated_account(self, run):
         run.return_value.returncode = 0

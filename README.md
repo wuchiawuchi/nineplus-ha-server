@@ -10,14 +10,14 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/wuchiawuchi/nineplus-ha-server/main/install.sh)
 ```
 
-脚本会询问后台管理员密码、生成随机 Bearer Token、拉取镜像并启动容器。部署后访问 `http://服务器IP:19009/admin`，在后台新增 NineBot+ 账号及对应的九号出行账号。默认安装到当前目录的 `nineplus-ha-server`；可用 `NINEPLUS_DIR=/指定目录` 修改位置。
+脚本会生成随机 Bearer Token、拉取镜像并启动容器。第一次访问 `http://服务器IP:19009/admin` 时，页面会让你设置后台管理员密码；之后在后台新增 NineBot+ 账号及对应的九号出行账号。默认安装到当前目录的 `nineplus-ha-server`；可用 `NINEPLUS_DIR=/指定目录` 修改位置。
 
 > 九号账号密码只传给你自己运行的容器，用于首次获取令牌，不会提交到 GitHub。九号云端接口可能随官方变更而失效。
 
 ## 前提（默认直连模式）
 
 1. 安装 Docker Desktop 或 Docker Engine（带 Compose）。
-2. 准备一个后台管理员密码，以及需要绑定的九号出行账号。
+2. 准备需要绑定的九号出行账号。
 3. 运行服务器可以访问九号云端。
 
 不需要安装 Home Assistant，不需要 HA Token，也不需要手工填写车辆 SN。

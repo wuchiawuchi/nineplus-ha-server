@@ -36,14 +36,10 @@ curl -fsSL "$REPO_RAW/compose.yaml" -o compose.yaml
 if [[ "${NINEPLUS_RECONFIGURE:-0}" != "1" && ( -f .env || -f config.json ) ]]; then
   say "检测到旧配置，将保留原文件。如需重新输入账号密码，请用 NINEPLUS_RECONFIGURE=1 重跑。"
 else
-  ADMIN_PASSWORD="$(secret 'NinePlus 后台管理员密码')"
-  [[ ${#ADMIN_PASSWORD} -ge 8 ]] || die "管理员密码至少需要 8 位。"
   BEARER="$(openssl rand -hex 32)"
-  ADMIN_PASSWORD_B64="$(printf '%s' "$ADMIN_PASSWORD" | base64 | tr -d '\r\n')"
 
   umask 077
-  printf 'NINEPLUS_BACKEND=direct\nNINEPLUS_BEARER_TOKEN=%s\nNINEPLUS_ADMIN_PASSWORD_B64=%s\n' \
-    "$BEARER" "$ADMIN_PASSWORD_B64" > .env
+  printf 'NINEPLUS_BACKEND=direct\nNINEPLUS_BEARER_TOKEN=%s\n' "$BEARER" > .env
   printf '{"vehicles": []}\n' > config.json
 fi
 

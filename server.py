@@ -102,6 +102,7 @@ class AccountStore:
         self.path = settings.accounts_path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._meta: dict[str, Any] = {}
         self._accounts = self._load()
         self._migrate_legacy_account()
 
@@ -110,6 +111,8 @@ class AccountStore:
             return {}
         with self.path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
+        if isinstance(payload, dict) and isinstance(payload.get("meta"), dict):
+            self._meta = dict(payload["meta"])
         values = payload.get("accounts", payload) if isinstance(payload, dict) else {}
         if not isinstance(values, dict):
             raise RuntimeError("accounts.json 格式无效")
@@ -118,7 +121,7 @@ class AccountStore:
     def _save(self) -> None:
         temporary = self.path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
-            json.dump({"version": 1, "accounts": self._accounts}, handle, ensure_ascii=False, indent=2)
+            json.dump({"version": 1, "meta": self._meta, "accounts": self._accounts}, handle, ensure_ascii=False, indent=2)
         os.chmod(temporary, 0o600)
         temporary.replace(self.path)
 
@@ -157,6 +160,30 @@ class AccountStore:
                 }
                 for account, record in sorted(self._accounts.items())
             ]
+
+    def admin_configured(self) -> bool:
+        return bool(self.settings.admin_password or self._meta.get("admin_password_hash"))
+
+    def authenticate_admin(self, password: str) -> bool:
+        if self.settings.admin_password:
+            return hmac.compare_digest(password, self.settings.admin_password)
+        salt = str(self._meta.get("admin_password_salt", ""))
+        digest = str(self._meta.get("admin_password_hash", ""))
+        if not salt or not digest:
+            return False
+        _, candidate = self._password_hash(password, salt)
+        return hmac.compare_digest(candidate, digest)
+
+    def setup_admin(self, password: str) -> None:
+        if len(password) < 8:
+            raise ValueError("管理员密码至少需要 8 位")
+        with self._lock:
+            if self.admin_configured():
+                raise ValueError("管理员密码已经设置")
+            salt, digest = self._password_hash(password)
+            self._meta["admin_password_salt"] = salt
+            self._meta["admin_password_hash"] = digest
+            self._save()
 
     def authenticate(self, account: str, password: str) -> dict[str, Any] | None:
         with self._lock:
@@ -363,6 +390,20 @@ class NinePlusAdapter:
         with self._session_lock:
             self._admin_sessions.add(token)
         return token
+
+    def admin_configured(self) -> bool:
+        return self.account_store.admin_configured() if self.account_store else bool(self.settings.admin_password)
+
+    def authenticate_admin(self, password: str) -> bool:
+        return self.account_store.authenticate_admin(password) if self.account_store else hmac.compare_digest(password, self.settings.admin_password)
+
+    def setup_admin(self, password: str) -> None:
+        if self.account_store:
+            self.account_store.setup_admin(password)
+        elif self.settings.admin_password:
+            raise ValueError("管理员密码已经设置")
+        else:
+            raise ValueError("当前模式不支持后台初始化")
 
     def is_admin_session(self, token: str) -> bool:
         with self._session_lock:
@@ -586,6 +627,10 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
         notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 后台登录</title></head><body style="font-family:-apple-system,sans-serif;background:#f4f6f8"><main style="max-width:420px;margin:80px auto;background:white;padding:28px;border-radius:16px"><h1>NinePlus 后台</h1>{notice}<form method="post" action="/admin/login"><label>管理员密码</label><input name="password" type="password" required style="box-sizing:border-box;width:100%;padding:12px;margin:8px 0;border:1px solid #ccd2d8;border-radius:9px"><button style="padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white">登录</button></form></main></body></html>"""
 
+    def _admin_setup_page(self, error: str = "") -> str:
+        notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
+        return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>初始化 NinePlus 后台</title></head><body style="font-family:-apple-system,sans-serif;background:#f4f6f8"><main style="max-width:420px;margin:80px auto;background:white;padding:28px;border-radius:16px"><h1>初始化后台</h1><p>第一次使用，请设置管理员密码。密码至少 8 位。</p>{notice}<form method="post" action="/admin/setup"><label>设置管理员密码</label><input name="password" type="password" required minlength="8" style="box-sizing:border-box;width:100%;padding:12px;margin:8px 0;border:1px solid #ccd2d8;border-radius:9px"><label>再次输入</label><input name="password_confirm" type="password" required minlength="8" style="box-sizing:border-box;width:100%;padding:12px;margin:8px 0;border:1px solid #ccd2d8;border-radius:9px"><button style="padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white">保存并进入后台</button></form></main></body></html>"""
+
     def _authorized(self) -> bool:
         required = self.adapter.settings.bearer_token
         return not required or self.headers.get("Authorization") == f"Bearer {required}"
@@ -596,11 +641,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
         method = self.command
         body = self._body() if method == "POST" else {}
 
-        if parts == ["admin", "login"] and method == "POST":
-            if not self.adapter.settings.admin_password:
-                self._html_reply(HTTPStatus.SERVICE_UNAVAILABLE, self._admin_login_page("请先配置 NINEPLUS_ADMIN_PASSWORD"))
+        if parts == ["admin", "setup"] and method == "POST":
+            if self.adapter.admin_configured():
+                self._html_reply(HTTPStatus.SEE_OTHER, '<meta http-equiv="refresh" content="0;url=/admin">')
                 return
-            if not hmac.compare_digest(str(body.get("password", "")), self.adapter.settings.admin_password):
+            if body.get("password") != body.get("password_confirm"):
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_setup_page("两次输入的密码不一致"))
+                return
+            try:
+                self.adapter.setup_admin(str(body.get("password", "")))
+                token = self.adapter.new_admin_session()
+                self._html_reply(HTTPStatus.SEE_OTHER, '<meta http-equiv="refresh" content="0;url=/admin">', f"nineplus_admin={token}; Path=/admin; HttpOnly; SameSite=Strict")
+            except ValueError as exc:
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_setup_page(str(exc)))
+            return
+        if parts == ["admin", "login"] and method == "POST":
+            if not self.adapter.admin_configured():
+                self._html_reply(HTTPStatus.OK, self._admin_setup_page())
+                return
+            if not self.adapter.authenticate_admin(str(body.get("password", ""))):
                 self._html_reply(HTTPStatus.UNAUTHORIZED, self._admin_login_page("管理员密码错误"))
                 return
             token = self.adapter.new_admin_session()
@@ -608,7 +667,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
             return
         if parts == ["admin"] and method == "GET":
             if not self.adapter.is_admin_session(self._admin_token()):
-                self._html_reply(HTTPStatus.OK, self._admin_login_page())
+                page = self._admin_login_page() if self.adapter.admin_configured() else self._admin_setup_page()
+                self._html_reply(HTTPStatus.OK, page)
             else:
                 query = urllib.parse.parse_qs(parsed.query)
                 self._html_reply(HTTPStatus.OK, self._admin_page(query.get("message", [""])[0], query.get("error", [""])[0]))
@@ -732,8 +792,6 @@ def main() -> None:
     settings = Settings.from_env()
     if settings.backend != "direct" and not settings.ha_token:
         raise SystemExit("Home Assistant 模式下 HA_TOKEN 不能为空")
-    if settings.backend == "direct" and not settings.admin_password:
-        raise SystemExit("直连模式下 NINEPLUS_ADMIN_PASSWORD 不能为空")
     Handler.adapter = NinePlusAdapter(settings)
     host = _env("HOST", "0.0.0.0")
     port = int(_env("PORT", "19009"))
