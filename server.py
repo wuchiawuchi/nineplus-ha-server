@@ -393,7 +393,7 @@ class Handler(BaseHTTPRequestHandler):
         return ""
 
     def _admin_page(self, message: str = "", error: str = "") -> str:
-        content = """<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号（手机号）</label><input name="app_account" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{9}" maxlength="11" title="请输入 11 位手机号" required><label>NineBot+ 登录密码（至少 8 位）</label><input name="app_password" type="password" autocomplete="new-password" minlength="8" required><label>九号出行账号（手机号）</label><input name="ninebot_username" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{9}" maxlength="11" title="请输入 11 位手机号" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section>"""
+        content = """<section><h2>新增账号</h2><form method="post" action="/admin/accounts" onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='正在验证九号账号，请稍候…';"><label>NineBot+ 登录账号（手机号）</label><input name="app_account" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{9}" maxlength="11" title="请输入 11 位手机号" required><label>NineBot+ 登录密码（至少 8 位）</label><input name="app_password" type="password" autocomplete="new-password" minlength="8" required><label>九号出行账号（手机号）</label><input name="ninebot_username" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{9}" maxlength="11" title="请输入 11 位手机号" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section>"""
         return self._admin_layout("新增账号", content, message, error)
 
     def _admin_accounts_page(self, message: str = "", error: str = "") -> str:
@@ -408,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._admin_layout("已有账号", content, message, error)
 
     def _admin_password_page(self, message: str = "", error: str = "") -> str:
-        content = """<section><h2>修改管理员密码</h2><form method="post" action="/admin/password"><label>当前密码</label><input name="current_password" type="password" autocomplete="current-password" required><label>新密码（至少 8 位）</label><input name="new_password" type="password" autocomplete="new-password" minlength="8" required><label>再次输入新密码</label><input name="new_password_confirm" type="password" autocomplete="new-password" minlength="8" required><button type="submit">修改管理员密码</button></form></section>"""
+        content = """<section><h2>修改管理员密码</h2><form method="post" action="/admin/password" onsubmit="this.querySelector('button').disabled=true;this.querySelector('button').textContent='正在修改，请稍候…';"><label>当前密码</label><input name="current_password" type="password" autocomplete="current-password" required><label>新密码（至少 8 位）</label><input name="new_password" type="password" autocomplete="new-password" minlength="8" required><label>再次输入新密码</label><input name="new_password_confirm" type="password" autocomplete="new-password" minlength="8" required><button type="submit">修改管理员密码</button></form></section>"""
         return self._admin_layout("修改管理员密码", content, message, error)
 
     @staticmethod
@@ -418,8 +418,9 @@ class Handler(BaseHTTPRequestHandler):
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 账号管理</title><style>
 body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}nav{{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 20px}}nav a{{padding:10px 14px;border-radius:9px;background:white;color:#17202a;text-decoration:none;box-shadow:0 3px 12px #0000000a}}nav a.active{{background:#14181c;color:white}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1><nav><a class="{'active' if title == '新增账号' else ''}" href="/admin">新增账号</a><a class="{'active' if title == '已有账号' else ''}" href="/admin/accounts">已有账号</a><a class="{'active' if title == '修改管理员密码' else ''}" href="/admin/password">修改管理员密码</a></nav>{notice}{content}</main></body></html>"""
 
-    def _admin_login_page(self, error: str = "") -> str:
-        notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
+    def _admin_login_page(self, error: str = "", message: str = "") -> str:
+        notice = f'<p style="color:#16803c">{html.escape(message)}</p>' if message else ""
+        notice += f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 后台登录</title></head><body style="font-family:-apple-system,sans-serif;background:#f4f6f8"><main style="max-width:420px;margin:80px auto;background:white;padding:28px;border-radius:16px"><h1>NinePlus 后台</h1>{notice}<form method="post" action="/admin/login"><label>管理员密码</label><input name="password" type="password" required style="box-sizing:border-box;width:100%;padding:12px;margin:8px 0;border:1px solid #ccd2d8;border-radius:9px"><button style="padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white">登录</button></form></main></body></html>"""
 
     def _admin_setup_page(self, error: str = "") -> str:
@@ -488,7 +489,7 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
                 )
                 self._html_reply(
                     HTTPStatus.OK,
-                    self._admin_login_page("密码修改成功，请使用新密码登录"),
+                    self._admin_login_page(message="密码修改成功，请使用新密码登录"),
                     "nineplus_admin=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0",
                 )
             except ValueError as exc:
@@ -506,10 +507,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
                     str(body.get("app_account", "")), str(body.get("app_password", "")),
                     str(body.get("ninebot_username", "")), str(body.get("ninebot_password", "")),
                 )
-                message = f"账号添加成功，发现 {result['vehicle_count']} 辆车"
-                self.send_response(HTTPStatus.SEE_OTHER)
-                self.send_header("Location", "/admin/accounts?" + urllib.parse.urlencode({"message": message}))
-                self.end_headers()
+                message = f"九号账号验证成功，NineBot+ 账号新增成功，发现 {result['vehicle_count']} 辆车"
+                self._html_reply(HTTPStatus.OK, self._admin_accounts_page(message=message))
             except (RuntimeError, ValueError) as exc:
                 self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_page(error=str(exc)))
             return
