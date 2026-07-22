@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NinePlus-compatible HTTP adapter backed by Home Assistant entities."""
+"""NinePlus-compatible HTTP adapter backed by the Ninebot cloud."""
 
 from __future__ import annotations
 
@@ -13,9 +13,7 @@ import secrets
 import subprocess
 import sys
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -38,38 +36,11 @@ def _secret_env(name: str, legacy_name: str) -> str:
     return _env(legacy_name)
 
 
-def _number(value: Any) -> float | int | None:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return value
-    try:
-        number = float(str(value).strip())
-        return int(number) if number.is_integer() else number
-    except (TypeError, ValueError):
-        return None
-
-
-def _bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on", "charging", "locked", "powered_on"}:
-        return True
-    if normalized in {"0", "false", "no", "off", "idle", "unlocked", "powered_off"}:
-        return False
-    return None
-
-
 @dataclass(frozen=True)
 class Settings:
-    ha_url: str
-    ha_token: str
     bearer_token: str
-    account: str
-    password: str
-    config_path: Path
-    backend: str = "home_assistant"
+    account: str = ""
+    password: str = ""
     ninebot_username: str = ""
     ninebot_password: str = ""
     ninebot_config_dir: Path = Path("/data/ninebot")
@@ -79,13 +50,9 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            ha_url=_env("HA_URL", "http://homeassistant.local:8123").rstrip("/"),
-            ha_token=_env("HA_TOKEN"),
             bearer_token=_env("NINEPLUS_BEARER_TOKEN"),
             account=_env("NINEPLUS_ACCOUNT"),
             password=_secret_env("NINEPLUS_PASSWORD_B64", "NINEPLUS_PASSWORD"),
-            config_path=Path(_env("NINEPLUS_CONFIG", "/data/config.json")),
-            backend=_env("NINEPLUS_BACKEND", "direct").lower(),
             ninebot_username=_env("NINEBOT_USERNAME"),
             ninebot_password=_secret_env("NINEBOT_PASSWORD_B64", "NINEBOT_PASSWORD"),
             ninebot_config_dir=Path(_env("NINEBOT_CONFIG_DIR", "/data/ninebot")),
@@ -234,9 +201,8 @@ class AccountStore:
 
     def _settings_for(self, config_dir: Path, username: str, password: str) -> Settings:
         return Settings(
-            self.settings.ha_url, self.settings.ha_token, self.settings.bearer_token,
-            self.settings.account, self.settings.password, self.settings.config_path,
-            backend="direct", ninebot_username=username, ninebot_password=password,
+            self.settings.bearer_token, self.settings.account, self.settings.password,
+            ninebot_username=username, ninebot_password=password,
             ninebot_config_dir=config_dir, accounts_path=self.settings.accounts_path,
             admin_password=self.settings.admin_password,
         )
@@ -317,71 +283,25 @@ class DirectNinebotClient:
         return self.run(*command)
 
 
-class HomeAssistantClient:
+class NinePlusAdapter:
     def __init__(self, settings: Settings):
         self.settings = settings
-
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-        url = f"{self.settings.ha_url}/api/{path.lstrip('/')}"
-        data = json.dumps(body).encode() if body is not None else None
-        request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Bearer {self.settings.ha_token}")
-        request.add_header("Accept", "application/json")
-        if data is not None:
-            request.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                payload = response.read()
-                return json.loads(payload) if payload else {}
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")
-            raise RuntimeError(f"Home Assistant HTTP {exc.code}: {detail[:300]}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"无法连接 Home Assistant: {exc.reason}") from exc
-
-    def check(self) -> None:
-        self._request("GET", "")
-
-    def state(self, entity_id: str) -> dict[str, Any]:
-        return self._request("GET", f"states/{urllib.parse.quote(entity_id, safe='.')}")
-
-    def call_service(self, domain: str, service: str, data: dict[str, Any]) -> Any:
-        return self._request("POST", f"services/{domain}/{service}", data)
-
-
-class NinePlusAdapter:
-    def __init__(self, settings: Settings, ha: HomeAssistantClient | None = None):
-        self.settings = settings
-        self.account_store = AccountStore(settings) if settings.backend == "direct" and ha is None else None
-        self.direct = None
-        self.ha = ha or (None if self.account_store else HomeAssistantClient(settings))
-        self.config = {"vehicles": []} if self.account_store else self._load_config()
+        self.account_store = AccountStore(settings)
         self._sessions: dict[str, tuple[str, dict[str, Any]]] = {}
         self._clients: dict[str, DirectNinebotClient] = {}
         self._session_lock = threading.RLock()
         self._admin_sessions: set[str] = set()
 
     def login(self, account: str, password: str) -> dict[str, Any] | None:
-        if not self.account_store:
-            configured_account = self.settings.account
-            configured_password = self.settings.password
-            if configured_account and account != configured_account:
-                return None
-            if configured_password and password != configured_password:
-                return None
-            record: dict[str, Any] = {}
-        else:
-            record = self.account_store.authenticate(account, password) or {}
-            if not record:
-                return None
+        record = self.account_store.authenticate(account, password) or {}
+        if not record:
+            return None
         token = secrets.token_urlsafe(32)
         with self._session_lock:
             self._sessions[token] = (account, record)
         return {"phone": account, "session_token": token}
 
     def client_for_session(self, token: str) -> DirectNinebotClient | None:
-        if not self.account_store:
-            return None
         with self._session_lock:
             session = self._sessions.get(token)
             if not session:
@@ -400,176 +320,17 @@ class NinePlusAdapter:
         return token
 
     def admin_configured(self) -> bool:
-        return self.account_store.admin_configured() if self.account_store else bool(self.settings.admin_password)
+        return self.account_store.admin_configured()
 
     def authenticate_admin(self, password: str) -> bool:
-        return self.account_store.authenticate_admin(password) if self.account_store else hmac.compare_digest(password, self.settings.admin_password)
+        return self.account_store.authenticate_admin(password)
 
     def setup_admin(self, password: str) -> None:
-        if self.account_store:
-            self.account_store.setup_admin(password)
-        elif self.settings.admin_password:
-            raise ValueError("管理员密码已经设置")
-        else:
-            raise ValueError("当前模式不支持后台初始化")
+        self.account_store.setup_admin(password)
 
     def is_admin_session(self, token: str) -> bool:
         with self._session_lock:
             return token in self._admin_sessions
-
-    def _load_config(self) -> dict[str, Any]:
-        if not self.settings.config_path.exists():
-            raise RuntimeError(f"配置文件不存在: {self.settings.config_path}")
-        with self.settings.config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
-        vehicles = config.get("vehicles")
-        if not isinstance(vehicles, list) or not vehicles:
-            raise RuntimeError("config.json 至少需要一辆 vehicles 配置")
-        for vehicle in vehicles:
-            if not vehicle.get("sn"):
-                raise RuntimeError("每辆车都必须配置 sn")
-        return config
-
-    def vehicle(self, sn: str) -> dict[str, Any]:
-        if self.direct:
-            for vehicle in self.direct.vehicles():
-                if str(vehicle.get("wnumber") or vehicle.get("sn")) == sn:
-                    return vehicle
-            raise KeyError(sn)
-        for vehicle in self.config["vehicles"]:
-            if str(vehicle["sn"]) == sn:
-                return vehicle
-        raise KeyError(sn)
-
-    @staticmethod
-    def _hasscc_entity(sn: str, key: str) -> str:
-        """Entity id emitted by hasscc/ninebot's NinebotEntity class."""
-        return f"ninebot.{sn}_{key}".lower()
-
-    def _entity_spec(self, vehicle: dict[str, Any], key: str) -> Any:
-        explicit = vehicle.get("entities", {}).get(key)
-        if explicit is not None:
-            return explicit
-        if vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot":
-            aliases = {
-                "range": "endurance",
-                "powered_on": "power",
-                "locked": "lock",
-                "latitude": "location",
-                "longitude": "location",
-                "voltage": "bms_voltage",
-                "temperature": "batt_temp",
-                "total_mileage": "month_mileage",
-            }
-            entity_key = aliases.get(key, key)
-            spec: dict[str, Any] = {"entity_id": self._hasscc_entity(str(vehicle["sn"]), entity_key)}
-            if key in {"latitude", "longitude"}:
-                spec["attribute"] = key
-            return spec
-        return None
-
-    @staticmethod
-    def vehicle_info(vehicle: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "sn": str(vehicle["sn"]),
-            "wnumber": str(vehicle["sn"]),
-            "device_name": vehicle.get("name", "Ninebot"),
-            "vehicle_name": vehicle.get("model", "Ninebot"),
-            "v6_light_img_url": vehicle.get("image_url"),
-        }
-
-    def _entity_value(self, spec: Any, default: Any = None) -> Any:
-        if spec is None:
-            return default
-        if not isinstance(spec, dict):
-            spec = {"entity_id": spec}
-        entity_id = spec.get("entity_id")
-        if not entity_id:
-            return spec.get("value", default)
-        try:
-            state = self.ha.state(str(entity_id))
-        except (KeyError, RuntimeError):
-            return default
-        attribute = spec.get("attribute")
-        value = state.get("attributes", {}).get(attribute) if attribute else state.get("state")
-        mapping = spec.get("map", {})
-        value = mapping.get(str(value), value)
-        scale = _number(spec.get("scale", 1)) or 1
-        numeric = _number(value)
-        if numeric is not None and scale != 1:
-            value = numeric * scale
-        return value if value is not None else default
-
-    def dashboard(self, sn: str) -> dict[str, Any]:
-        if self.direct:
-            return self.direct.dashboard(sn)
-        vehicle = self.vehicle(sn)
-        value = lambda key, default=None: self._entity_value(self._entity_spec(vehicle, key), default)
-        battery = _number(value("battery"))
-        charging = _bool(value("charging"))
-        powered = _bool(value("powered_on"))
-        locked = _bool(value("locked"))
-        try:
-            last_ride_state = self.ha.state(self._hasscc_entity(sn, "last_mileage")) if vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot" else None
-        except (KeyError, RuntimeError):
-            last_ride_state = None
-        last_ride = last_ride_state.get("attributes", {}) if isinstance(last_ride_state, dict) else {}
-        state = {
-            "dump_energy": battery,
-            "estimate_mileage": _number(value("range")),
-            "precise_estimate_mileage": _number(value("range")),
-            "charging": int(charging) if charging is not None else None,
-            "pwr": int(powered) if powered is not None else None,
-            "lock_status": int(locked) if locked is not None else None,
-            "total_mileage": _number(value("total_mileage")),
-            "locationInfo": {
-                "locationDesc": value("location"),
-                "lat": _number(value("latitude")),
-                "lng": _number(value("longitude")),
-            },
-        }
-        battery_info = {
-            "electricity": battery,
-            "battery_voltage": _number(value("voltage")),
-            "bat_temp": _number(value("temperature")),
-            "bms_cycle": _number(value("bms_cycles")),
-            "charging": int(charging) if charging is not None else None,
-            "remain_charge_time": _number(value("remaining_charge_time")),
-        }
-        rides = [last_ride] if last_ride else []
-        return {
-            "vehicle": self.vehicle_info(vehicle),
-            "state": {key: value for key, value in state.items() if value is not None},
-            "battery": {key: value for key, value in battery_info.items() if value is not None},
-            "travel": {
-                "month": datetime.now().strftime("%Y%m"),
-                "list": rides,
-                "total_mileages": _number(value("total_mileage")),
-                "ec": _number(value("month_energy")),
-            },
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    def action(self, sn: str, action: str) -> Any:
-        if self.direct:
-            return self.direct.action(sn, action)
-        vehicle = self.vehicle(sn)
-        spec = vehicle.get("services", {}).get(action)
-        if not spec and vehicle.get("integration", "hasscc/ninebot") == "hasscc/ninebot":
-            defaults = {
-                "bell": {"service": "button.press", "data": {"entity_id": self._hasscc_entity(sn, "bell")}},
-                "buck": {"service": "button.press", "data": {"entity_id": self._hasscc_entity(sn, "bucket")}},
-                "engine_start": {"service": "lock.unlock", "data": {"entity_id": self._hasscc_entity(sn, "lock")}},
-                "engine_stop": {"service": "lock.lock", "data": {"entity_id": self._hasscc_entity(sn, "lock")}},
-            }
-            spec = defaults.get(action)
-        if not spec:
-            raise NotImplementedError(f"Home Assistant 未配置 {action} 服务")
-        domain, separator, service = str(spec.get("service", "")).partition(".")
-        if not separator or not domain or not service:
-            raise RuntimeError(f"{action} 的 service 必须使用 domain.service 格式")
-        return self.ha.call_service(domain, service, dict(spec.get("data", {})))
-
 
 class Handler(BaseHTTPRequestHandler):
     adapter: NinePlusAdapter
@@ -702,13 +463,8 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
             return
 
         if parts == ["healthz"] and method == "GET":
-            if self.adapter.account_store:
-                backend = "ninebot-cloud-multi-account"
-                account_count = len(self.adapter.account_store.list_accounts())
-            else:
-                self.adapter.ha.check()
-                backend = "home-assistant"
-                account_count = 1
+            backend = "ninebot-cloud-multi-account"
+            account_count = len(self.adapter.account_store.list_accounts())
             self._reply(HTTPStatus.OK, {"status": "ok", "backend": backend, "accounts": account_count})
             return
         if not self._authorized():
@@ -721,36 +477,29 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
                 return
             self._reply(HTTPStatus.OK, result)
             return
-        direct_client = None
-        if self.adapter.account_store:
-            direct_client = self.adapter.client_for_session(self.headers.get("X-NinePlus-Session", ""))
-            if direct_client is None:
-                self._reply(HTTPStatus.UNAUTHORIZED, error="登录会话无效，请重新登录")
-                return
+        direct_client = self.adapter.client_for_session(self.headers.get("X-NinePlus-Session", ""))
+        if direct_client is None:
+            self._reply(HTTPStatus.UNAUTHORIZED, error="登录会话无效，请重新登录")
+            return
         if parts == ["vehicles"] and method == "GET":
-            vehicles = direct_client.vehicles() if direct_client else [self.adapter.vehicle_info(v) for v in self.adapter.config["vehicles"]]
-            self._reply(HTTPStatus.OK, {"vehicles": vehicles})
+            self._reply(HTTPStatus.OK, {"vehicles": direct_client.vehicles()})
             return
         if len(parts) >= 3 and parts[0] == "vehicles":
             sn, endpoint = parts[1], parts[2]
             if direct_client:
                 direct_client.ensure_vehicle(sn)
             if method == "GET" and endpoint in {"dashboard", "status", "battery"}:
-                dashboard = direct_client.dashboard(sn) if direct_client else self.adapter.dashboard(sn)
-                status_key = "status" if direct_client else "state"
-                value = dashboard if endpoint == "dashboard" else dashboard[status_key if endpoint == "status" else "battery"]
+                dashboard = direct_client.dashboard(sn)
+                value = dashboard if endpoint == "dashboard" else dashboard["status" if endpoint == "status" else "battery"]
                 self._reply(HTTPStatus.OK, value)
                 return
             if method == "GET" and endpoint == "travel" and len(parts) == 4:
                 travel_id = urllib.parse.unquote(parts[3])
-                if direct_client:
-                    self._reply(HTTPStatus.OK, direct_client.travel_detail(sn, travel_id))
-                else:
-                    self._reply(HTTPStatus.NOT_IMPLEMENTED, error="HA 模式不提供行程详情")
+                self._reply(HTTPStatus.OK, direct_client.travel_detail(sn, travel_id))
                 return
             if method == "GET" and endpoint == "travel":
                 month = urllib.parse.parse_qs(parsed.query).get("month", [datetime.now().strftime("%Y%m")])[0]
-                value = direct_client.travel(sn, month) if direct_client else {"month": month, "list": [], "total": 0}
+                value = direct_client.travel(sn, month)
                 self._reply(HTTPStatus.OK, value)
                 return
             if method == "POST" and endpoint == "travel-sync":
@@ -769,10 +518,10 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
             elif method == "POST" and len(parts) == 4 and endpoint == "engine" and parts[3] in {"start", "stop"}:
                 action = f"engine_{parts[3]}"
             if action:
-                self._reply(HTTPStatus.OK, direct_client.action(sn, action) if direct_client else self.adapter.action(sn, action))
+                self._reply(HTTPStatus.OK, direct_client.action(sn, action))
                 return
         if method == "POST" and tuple(parts) in {("devices", "register"), ("live-activities", "register")}:
-            self._reply(HTTPStatus.OK, {"accepted": False, "reason": "HA adapter does not provide APNs"})
+            self._reply(HTTPStatus.OK, {"accepted": False, "reason": "APNs is not configured"})
             return
         self._reply(HTTPStatus.NOT_FOUND, error="接口不存在")
 
@@ -798,12 +547,10 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
 
 def main() -> None:
     settings = Settings.from_env()
-    if settings.backend != "direct" and not settings.ha_token:
-        raise SystemExit("Home Assistant 模式下 HA_TOKEN 不能为空")
     Handler.adapter = NinePlusAdapter(settings)
     host = _env("HOST", "0.0.0.0")
     port = int(_env("PORT", "19009"))
-    print(f"NinePlus HA adapter listening on http://{host}:{port}")
+    print(f"NinePlus server listening on http://{host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 

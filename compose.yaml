@@ -6,7 +6,6 @@ services:
     ports:
       - "19009:19009"
     environment:
-      NINEPLUS_BACKEND: "${NINEPLUS_BACKEND:-direct}"
       NINEBOT_USERNAME: "${NINEBOT_USERNAME:-}"
       NINEBOT_PASSWORD: "${NINEBOT_PASSWORD:-}"
       NINEBOT_PASSWORD_B64: "${NINEBOT_PASSWORD_B64:-}"
@@ -14,15 +13,11 @@ services:
       NINEPLUS_ACCOUNTS: "/data/ninebot/accounts.json"
       NINEPLUS_ADMIN_PASSWORD: "${NINEPLUS_ADMIN_PASSWORD:-}"
       NINEPLUS_ADMIN_PASSWORD_B64: "${NINEPLUS_ADMIN_PASSWORD_B64:-}"
-      HA_URL: "${HA_URL:-http://homeassistant.local:8123}"
-      HA_TOKEN: "${HA_TOKEN:-}"
       NINEPLUS_BEARER_TOKEN: "${NINEPLUS_BEARER_TOKEN:-}"
       NINEPLUS_ACCOUNT: "${NINEPLUS_ACCOUNT:-homeassistant}"
       NINEPLUS_PASSWORD: "${NINEPLUS_PASSWORD:-}"
       NINEPLUS_PASSWORD_B64: "${NINEPLUS_PASSWORD_B64:-}"
-      NINEPLUS_CONFIG: "/data/config.json"
     volumes:
-      - ./config.json:/data/config.json:ro
       - ninebot-data:/data/ninebot
 
 volumes:

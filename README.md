@@ -1,6 +1,6 @@
 # NinePlus Server
 
-为 NineBot+ iOS 客户端提供九号云端 API。默认直接使用与 `hasscc/ninebot` 相同的 `ninecli` 登录九号，不依赖 Home Assistant；旧的 HA 实体适配模式仍保留。
+为 NineBot+ iOS 客户端提供九号云端 API。服务直接使用与 `hasscc/ninebot` 相同的 `ninecli` 登录九号，不依赖 Home Assistant。
 
 ## 一键部署
 
@@ -69,8 +69,6 @@ curl -H "Authorization: Bearer 随机长字符串" \
 docker compose up -d
 docker compose logs -f nineplus
 ```
-
-如需继续使用旧 HA 实体适配器，设置 `NINEPLUS_BACKEND=home_assistant`，并按 `config.example.json` 配置 `HA_URL`、`HA_TOKEN` 和车辆实体。
 
 ## GitHub Actions
 

@@ -33,14 +33,13 @@ cd "$PROJECT_DIR"
 say "下载部署文件到 $PROJECT_DIR"
 curl -fsSL "$REPO_RAW/compose.yaml" -o compose.yaml
 
-if [[ "${NINEPLUS_RECONFIGURE:-0}" != "1" && ( -f .env || -f config.json ) ]]; then
+if [[ "${NINEPLUS_RECONFIGURE:-0}" != "1" && -f .env ]]; then
   say "检测到旧配置，将保留原文件。如需重新输入账号密码，请用 NINEPLUS_RECONFIGURE=1 重跑。"
 else
   BEARER="$(openssl rand -hex 32)"
 
   umask 077
   printf 'NINEPLUS_BACKEND=direct\nNINEPLUS_BEARER_TOKEN=%s\n' "$BEARER" > .env
-  printf '{"vehicles": []}\n' > config.json
 fi
 
 say "拉取并启动 NinePlus 九号直连服务"
