@@ -121,6 +121,22 @@ class MultiAccountTests(unittest.TestCase):
         self.assertTrue(store.admin_configured())
         self.assertTrue(store.authenticate_admin("admin-pass"))
         self.assertFalse(store.authenticate_admin("wrong-pass"))
+        with self.assertRaisesRegex(ValueError, "当前管理员密码错误"):
+            store.change_admin_password("wrong-pass", "new-admin-pass")
+        with self.assertRaisesRegex(ValueError, "至少需要 8 位"):
+            store.change_admin_password("admin-pass", "short")
+        store.change_admin_password("admin-pass", "new-admin-pass")
+        reloaded = AccountStore(settings)
+        self.assertFalse(reloaded.authenticate_admin("admin-pass"))
+        self.assertTrue(reloaded.authenticate_admin("new-admin-pass"))
+
+    def test_persisted_admin_password_overrides_legacy_environment_password(self):
+        store = AccountStore(self.settings)
+        self.assertTrue(store.authenticate_admin("admin-secret"))
+        store.change_admin_password("admin-secret", "changed-admin")
+        reloaded = AccountStore(self.settings)
+        self.assertFalse(reloaded.authenticate_admin("admin-secret"))
+        self.assertTrue(reloaded.authenticate_admin("changed-admin"))
 
     @patch("server.subprocess.run")
     def test_adapter_session_resolves_only_authenticated_account(self, run):

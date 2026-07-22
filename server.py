@@ -136,14 +136,12 @@ class AccountStore:
         return bool(self.settings.admin_password or self._meta.get("admin_password_hash"))
 
     def authenticate_admin(self, password: str) -> bool:
-        if self.settings.admin_password:
-            return hmac.compare_digest(password, self.settings.admin_password)
         salt = str(self._meta.get("admin_password_salt", ""))
         digest = str(self._meta.get("admin_password_hash", ""))
-        if not salt or not digest:
-            return False
-        _, candidate = self._password_hash(password, salt)
-        return hmac.compare_digest(candidate, digest)
+        if salt and digest:
+            _, candidate = self._password_hash(password, salt)
+            return hmac.compare_digest(candidate, digest)
+        return bool(self.settings.admin_password) and hmac.compare_digest(password, self.settings.admin_password)
 
     def setup_admin(self, password: str) -> None:
         if len(password) < 8:
@@ -152,6 +150,17 @@ class AccountStore:
             if self.admin_configured():
                 raise ValueError("管理员密码已经设置")
             salt, digest = self._password_hash(password)
+            self._meta["admin_password_salt"] = salt
+            self._meta["admin_password_hash"] = digest
+            self._save()
+
+    def change_admin_password(self, current_password: str, new_password: str) -> None:
+        if not self.authenticate_admin(current_password):
+            raise ValueError("当前管理员密码错误")
+        if len(new_password) < 8:
+            raise ValueError("新管理员密码至少需要 8 位")
+        with self._lock:
+            salt, digest = self._password_hash(new_password)
             self._meta["admin_password_salt"] = salt
             self._meta["admin_password_hash"] = digest
             self._save()
@@ -328,6 +337,11 @@ class NinePlusAdapter:
     def setup_admin(self, password: str) -> None:
         self.account_store.setup_admin(password)
 
+    def change_admin_password(self, current_password: str, new_password: str) -> None:
+        self.account_store.change_admin_password(current_password, new_password)
+        with self._session_lock:
+            self._admin_sessions.clear()
+
     def is_admin_session(self, token: str) -> bool:
         with self._session_lock:
             return token in self._admin_sessions
@@ -390,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         notice = f'<p class="ok">{html.escape(message)}</p>' if message else ""
         notice += f'<p class="error">{html.escape(error)}</p>' if error else ""
         return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NinePlus 账号管理</title><style>
-body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1>{notice}<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号（手机号）</label><input name="app_account" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>NineBot+ 登录密码（至少 8 位）</label><input name="app_password" type="password" autocomplete="new-password" minlength="8" required><label>九号出行账号（手机号）</label><input name="ninebot_username" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section><section><h2>已有账号</h2><table><thead><tr><th>NineBot+ 账号</th><th>九号账号</th><th>创建时间</th></tr></thead><tbody>{rows or '<tr><td colspan="3">暂无账号</td></tr>'}</tbody></table></section></main></body></html>"""
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#17202a}}main{{max-width:820px;margin:40px auto;padding:0 18px}}section{{background:white;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 8px 28px #0000000d}}h1,h2{{margin-top:0}}label{{display:block;font-size:14px;margin:13px 0 5px}}input{{box-sizing:border-box;width:100%;padding:11px;border:1px solid #ccd2d8;border-radius:9px;font-size:16px}}button{{margin-top:18px;padding:11px 18px;border:0;border-radius:9px;background:#14181c;color:white;font-size:15px}}table{{width:100%;border-collapse:collapse}}th,td{{padding:10px 8px;text-align:left;border-bottom:1px solid #e8ebee;font-size:14px}}.ok{{color:#16803c}}.error{{color:#c9342f}}.hint{{color:#66717c;font-size:13px}}</style></head><body><main><h1>NinePlus 账号管理</h1>{notice}<section><h2>新增账号</h2><form method="post" action="/admin/accounts"><label>NineBot+ 登录账号（手机号）</label><input name="app_account" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>NineBot+ 登录密码（至少 8 位）</label><input name="app_password" type="password" autocomplete="new-password" minlength="8" required><label>九号出行账号（手机号）</label><input name="ninebot_username" type="tel" inputmode="numeric" autocomplete="username" pattern="1[3-9][0-9]{{9}}" maxlength="11" title="请输入 11 位手机号" required><label>九号出行密码</label><input name="ninebot_password" type="password" autocomplete="off" required><p class="hint">九号密码仅用于本次登录换取令牌，不写入 accounts.json。</p><button type="submit">验证九号账号并新增</button></form></section><section><h2>已有账号</h2><table><thead><tr><th>NineBot+ 账号</th><th>九号账号</th><th>创建时间</th></tr></thead><tbody>{rows or '<tr><td colspan="3">暂无账号</td></tr>'}</tbody></table></section><section><h2>修改管理员密码</h2><form method="post" action="/admin/password"><label>当前密码</label><input name="current_password" type="password" autocomplete="current-password" required><label>新密码（至少 8 位）</label><input name="new_password" type="password" autocomplete="new-password" minlength="8" required><label>再次输入新密码</label><input name="new_password_confirm" type="password" autocomplete="new-password" minlength="8" required><button type="submit">修改管理员密码</button></form></section></main></body></html>"""
 
     def _admin_login_page(self, error: str = "") -> str:
         notice = f'<p style="color:#c9342f">{html.escape(error)}</p>' if error else ""
@@ -441,6 +455,25 @@ body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:
             else:
                 query = urllib.parse.parse_qs(parsed.query)
                 self._html_reply(HTTPStatus.OK, self._admin_page(query.get("message", [""])[0], query.get("error", [""])[0]))
+            return
+        if parts == ["admin", "password"] and method == "POST":
+            if not self.adapter.is_admin_session(self._admin_token()):
+                self._html_reply(HTTPStatus.UNAUTHORIZED, self._admin_login_page("登录已失效"))
+                return
+            if body.get("new_password") != body.get("new_password_confirm"):
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_page(error="两次输入的新密码不一致"))
+                return
+            try:
+                self.adapter.change_admin_password(
+                    str(body.get("current_password", "")), str(body.get("new_password", "")),
+                )
+                self._html_reply(
+                    HTTPStatus.OK,
+                    self._admin_login_page("密码修改成功，请使用新密码登录"),
+                    "nineplus_admin=; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=0",
+                )
+            except ValueError as exc:
+                self._html_reply(HTTPStatus.BAD_REQUEST, self._admin_page(error=str(exc)))
             return
         if parts == ["admin", "accounts"] and method == "POST":
             if not self.adapter.is_admin_session(self._admin_token()):
